@@ -9,12 +9,12 @@ members = [
     "llimphi-hal", "llimphi-raster", "llimphi-layout", "llimphi-text",
     "llimphi-ui", "llimphi-theme", "llimphi-surface", "llimphi-motion",
     "llimphi-icons", "llimphi-compositor", "llimphi-workspace",
-    "widgets/*", "modules/*",
+    "widgets/*", "modules/*", "shared/app-bus",
 ]
 exclude = [
     "android",
     "llimphi-gallery", "llimphi-gpu-bench",
-    "widgets/gallery", "widgets/menubar",
+    "widgets/gallery",
     "modules/shuma-term", "modules/plugin-host",
 ]
 

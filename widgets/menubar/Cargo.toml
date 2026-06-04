@@ -12,4 +12,4 @@ llimphi-ui = { workspace = true }
 llimphi-theme = { workspace = true }
 llimphi-widget-button = { workspace = true }
 llimphi-widget-context-menu = { workspace = true }
-app-bus = { path = "../../../../shared/app-bus" }
+app-bus = { workspace = true }
