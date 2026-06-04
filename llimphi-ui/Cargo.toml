@@ -1,0 +1,28 @@
+[package]
+name = "llimphi-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+llimphi-hal = { path = "../llimphi-hal" }
+llimphi-layout = { path = "../llimphi-layout" }
+llimphi-raster = { path = "../llimphi-raster" }
+llimphi-text = { path = "../llimphi-text" }
+# El compositor declarativo (winit-free): View, mount, paint, hit-test.
+llimphi-compositor = { path = "../llimphi-compositor" }
+pollster = { workspace = true }
+
+[[example]]
+name = "counter"
+path = "examples/counter.rs"
+
+[[example]]
+name = "editor"
+path = "examples/editor.rs"
+
+[[example]]
+name = "gpu_paint_demo"
+path = "examples/gpu_paint_demo.rs"

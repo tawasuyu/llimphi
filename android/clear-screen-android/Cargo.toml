@@ -1,0 +1,49 @@
+[package]
+name = "clear-screen-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+description = "Demo Android Tier 1: pinta la pantalla con LEAD_GRAY usando llimphi-hal sobre Android NativeActivity."
+
+# Android NativeActivity carga la lib nativa como .so via dlopen; el
+# binario final es una `cdylib` con `android_main` exportado. xbuild /
+# cargo-apk se encargan de empaquetar el .so dentro del APK.
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+llimphi-hal = { path = "../../llimphi-hal" }
+# Activamos el feature de NativeActivity en winit para que linkee con la
+# clase NativeActivity del NDK y reciba eventos de surface/input desde la
+# Activity Java/Kotlin generada por android-activity.
+winit = { workspace = true, features = ["android-native-activity"] }
+wgpu.workspace = true
+pollster.workspace = true
+# `log` se declara aquí (no en el bloque condicional Android) para que
+# `cargo check --workspace` en host pase: los macros de `log` son no-op
+# sin logger instalado. En Android, `android_logger` (más abajo) instala
+# el sink real hacia `logcat`.
+log = "0.4"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", features = ["native-activity"] }
+android_logger = "0.14"
+
+# Metadata para xbuild / cargo-apk — define el manifiesto Android que se
+# inyecta en el APK final.
+[package.metadata.android]
+package = "net.gioser.llimphi.clearscreen"
+build_targets = ["aarch64-linux-android", "x86_64-linux-android"]
+min_sdk_version = 24
+target_sdk_version = 34
+
+[package.metadata.android.application]
+label = "Llimphi · clear_screen"
+debuggable = true
+
+[package.metadata.android.application.activity]
+config_changes = "orientation|screenSize|keyboardHidden"
+launch_mode = "singleTop"
+orientation = "unspecified"

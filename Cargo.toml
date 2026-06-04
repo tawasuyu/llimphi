@@ -1,0 +1,441 @@
+# Cargo.toml raíz STANDALONE de Llimphi — dry-run de extracción.
+# Generado desde la raíz de gioser quitando el prefijo 02_ruway/llimphi/ a los
+# path-deps internos. Excluye los 3 crates acoplados al resto del workspace
+# (menubar→app-bus, shuma-term→shuma-exec, plugin-host→card-core) y los demos
+# gallery que los agregan, más android (target propio).
+[workspace]
+resolver = "2"
+members = [
+    "llimphi-hal", "llimphi-raster", "llimphi-layout", "llimphi-text",
+    "llimphi-ui", "llimphi-theme", "llimphi-surface", "llimphi-motion",
+    "llimphi-icons", "llimphi-compositor", "llimphi-workspace",
+    "widgets/*", "modules/*",
+]
+exclude = [
+    "android",
+    "llimphi-gallery", "llimphi-gpu-bench",
+    "widgets/gallery", "widgets/menubar",
+    "modules/shuma-term", "modules/plugin-host",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+authors = ["Sergio <gerencia@jlsoltech.com>"]
+publish = false
+repository = "https://gitea.gioser.net/sergio/llimphi"
+
+[workspace.dependencies]
+# === Registro de apps / menú global ===
+app-bus = { path = "shared/app-bus" }
+# === Serialización ===
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+lsp-types = "0.97"
+serde-big-array = "0.5"
+postcard = { version = "1", features = ["use-std"] }
+toml = "0.8"
+ron = "0.8"
+bincode = "1"
+base64 = "0.22"
+
+# === Errores ===
+thiserror = "2"           # bump uniforme; arje (era 1) puede requerir ajustes menores
+anyhow = "1"
+
+# === Async ===
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# === Observabilidad ===
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# === Linux primitives (arje) ===
+nix = { version = "0.29", features = ["signal", "process", "sched", "mount", "fs", "socket", "net", "user"] }
+libc = "0.2"
+
+# === IDs / Hash / Crypto ===
+ulid = { version = "1", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "rng-getrandom"] }
+sha2 = "0.10"
+blake3 = "1.5"
+ed25519-dalek = "2"
+aes-gcm = "0.10"
+chacha20poly1305 = "0.10"
+argon2 = "0.5"
+rand = "0.8"
+
+# === WASM (arje) ===
+# wasmi 1.0: unifica la versión con renaser (su kernel ya corre 1.0), para
+# que el ABI WASM del host sea idéntico en Linux y en bare-metal.
+wasmi = "1.0"
+wat = "1"
+
+# === Storage / DB ===
+sled = "0.34"
+rusqlite = { version = "0.31", features = ["bundled", "blob"] }
+
+# === Ingesta de documentos (iniy-ingest: PDF / EPUB) ===
+pdf-extract = "0.7"
+epub = "2.1"
+
+# === Bulk import Wikipedia (iniy-wiki dump) ===
+bzip2 = "0.4"
+
+# === Compresión (minga multi-bundle) ===
+zstd = "0.13"
+
+# === HTTP server (iniy-server) ===
+axum = "0.7"
+tower = "0.5"
+
+# === ANN sobre embeddings (iniy nli --ann) ===
+instant-distance = "0.6"
+
+# === P2P (minga) ===
+libp2p = { version = "0.56", features = ["tokio", "tcp", "noise", "yamux", "macros", "kad", "identify", "relay", "dcutr", "autonat", "mdns"] }
+libp2p-stream = "=0.4.0-alpha"
+libp2p-allow-block-list = "0.6"
+
+# === SSH (ssh, sandokan RemoteEngine, matilda) ===
+russh = "0.54"
+
+# === Math determinista cross-platform (dominium) ===
+libm = "0.2"
+
+# === SMF (takiy-midi) ===
+# midly: parser/emitter SMF tipo 0/1, no_std-friendly, sin allocs en hot path.
+midly = "0.5"
+
+# === Code parsing (minga) ===
+arboard = "3"
+ropey = "1.6"
+tree-sitter = "0.24"
+tree-sitter-rust = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-go = "0.23"
+
+# === FS notify ===
+notify = "6.1"
+
+# === Grafos (iniy, nakui-core ya lo usa directo en 0.6) ===
+petgraph = "0.6"
+
+# === Image decoding (nahual-image-viewer-llimphi) ===
+# default-features = false: nos quedamos con PNG + JPEG + WebP (lossless).
+# tullpu-render exporta a las tres; AVIF/TIFF/… los habilitamos si una app
+# los pide específicamente.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+
+# === FUSE (minga-vfs) ===
+# default-features = false: prescinde de pkg-config/libfuse-dev en build.
+# El montaje pasa a ser Rust puro (vía el helper `fusermount3` en runtime).
+fuser = { version = "0.15", default-features = false }
+
+# === CLI / auth (minga) ===
+clap = { version = "4", features = ["derive"] }
+rpassword = "7"
+
+# === PAM (auth-core) ===
+pam = "0.8"
+
+# === D-Bus (arje compat) ===
+zbus = { version = "4", default-features = false, features = ["tokio"] }
+
+# === Tests ===
+tempfile = "3"
+
+# === Llimphi (motor gráfico soberano) ===
+# wgpu sobre Vulkan/Metal/DX12, winit para ventana en dev Linux.
+# raw-window-handle 0.6 alinea winit 0.30 con wgpu 24.
+# vello 0.5 = rasterizador vectorial sobre wgpu 24.
+# taffy 0.9 = motor Flexbox/Grid puro Rust (ya pulled por transitivos, lo alineamos).
+# parley 0.2 = shaping/layout de texto compatible con peniko 0.4 (que vello 0.5 expone).
+wgpu = "24"
+winit = "0.30"
+raw-window-handle = "0.6"
+pollster = "0.4"
+vello = "0.5"
+taffy = "0.9"
+# parley = shaping completo (bidi, ligatures, fallback CJK/emoji vía fontique, line break).
+parley = "0.4"
+# Bucle Elm (input→update→view→layout→raster→present). Lo consumen las apps.
+llimphi-ui = { path = "llimphi-ui" }
+# Paleta semántica compartida por las apps y los widgets.
+llimphi-theme = { path = "llimphi-theme" }
+# Tweens y helpers de animación sobre el bucle Elm.
+llimphi-motion = { path = "llimphi-motion" }
+# Iconos vectoriales (BezPath en grid 24×24) compartidos por todas las apps.
+llimphi-icons = { path = "llimphi-icons" }
+# Widgets reusables sobre llimphi-ui — uno por crate.
+llimphi-widget-app-header = { path = "widgets/app-header" }
+llimphi-widget-banner = { path = "widgets/banner" }
+llimphi-widget-button = { path = "widgets/button" }
+llimphi-widget-card = { path = "widgets/card" }
+llimphi-clipboard = { path = "widgets/clipboard" }
+llimphi-widget-context-menu = { path = "widgets/context-menu" }
+llimphi-widget-edit-menu = { path = "widgets/edit-menu" }
+llimphi-widget-menubar = { path = "widgets/menubar" }
+llimphi-widget-list = { path = "widgets/list" }
+llimphi-widget-grid = { path = "widgets/grid" }
+llimphi-widget-slider = { path = "widgets/slider" }
+llimphi-widget-scroll = { path = "widgets/scroll" }
+llimphi-widget-splitter = { path = "widgets/splitter" }
+llimphi-widget-stat-card = { path = "widgets/stat-card" }
+llimphi-widget-tabs = { path = "widgets/tabs" }
+llimphi-module-command-palette = { path = "modules/command-palette" }
+llimphi-module-diff-viewer = { path = "modules/diff-viewer" }
+llimphi-module-fif = { path = "modules/fif" }
+llimphi-module-file-picker = { path = "modules/file-picker" }
+llimphi-module-bookmarks = { path = "modules/bookmarks" }
+llimphi-module-mini-map = { path = "modules/mini-map" }
+llimphi-module-shuma-term = { path = "modules/shuma-term" }
+llimphi-module-symbol-outline = { path = "modules/symbol-outline" }
+llimphi-plugin-host = { path = "modules/plugin-host" }
+llimphi-widget-theme-switcher = { path = "widgets/theme-switcher" }
+llimphi-widget-text-area = { path = "widgets/text-area" }
+llimphi-widget-text-editor-core = { path = "widgets/text-editor-core" }
+llimphi-widget-text-editor = { path = "widgets/text-editor" }
+llimphi-widget-text-editor-lsp = { path = "widgets/text-editor-lsp" }
+llimphi-widget-text-input = { path = "widgets/text-input" }
+llimphi-widget-tiled = { path = "widgets/tiled" }
+llimphi-widget-nodegraph = { path = "widgets/nodegraph" }
+llimphi-widget-tree = { path = "widgets/tree" }
+llimphi-widget-navigator = { path = "widgets/navigator" }
+# Sello vectorial wawa (rombo + W implícita + Merkle Core).
+llimphi-widget-wawa-mark = { path = "widgets/wawa-mark" }
+# Widgets de elegancia transversal (tooltip, spinner, progress, toast,
+# modal, empty, status-bar, shortcuts-help, splash).
+llimphi-widget-tooltip = { path = "widgets/tooltip" }
+llimphi-widget-spinner = { path = "widgets/spinner" }
+llimphi-widget-progress = { path = "widgets/progress" }
+llimphi-widget-toast = { path = "widgets/toast" }
+llimphi-widget-modal = { path = "widgets/modal" }
+llimphi-widget-empty = { path = "widgets/empty" }
+llimphi-widget-status-bar = { path = "widgets/status-bar" }
+llimphi-widget-shortcuts-help = { path = "widgets/shortcuts-help" }
+llimphi-widget-timeline = { path = "widgets/timeline" }
+llimphi-widget-splash = { path = "widgets/splash" }
+# Controles de formulario y signaling (switch, segmented, breadcrumb,
+# badge, avatar, skeleton, field).
+llimphi-widget-switch = { path = "widgets/switch" }
+llimphi-widget-segmented = { path = "widgets/segmented" }
+llimphi-widget-dock-rail = { path = "widgets/dock-rail" }
+llimphi-widget-breadcrumb = { path = "widgets/breadcrumb" }
+llimphi-widget-badge = { path = "widgets/badge" }
+llimphi-widget-avatar = { path = "widgets/avatar" }
+llimphi-widget-skeleton = { path = "widgets/skeleton" }
+llimphi-widget-field = { path = "widgets/field" }
+# Firma visual transversal (gradient sutil + hairline accent).
+llimphi-widget-panel = { path = "widgets/panel" }
+llimphi-widget-panes = { path = "widgets/panes" }
+llimphi-workspace = { path = "llimphi-workspace" }
+# Abstracción Selector — host (paths) + wawa (khipus).
+llimphi-module-selector = { path = "modules/selector" }
+
+# === Filesystem helpers ===
+directories = "5"
+
+# === Diff line-based (llimphi-module-diff-viewer) ===
+# `similar` es la crate de facto: implementa Myers + Patience + LCS,
+# expone `TextDiff` con ChangeTag por línea (Equal/Insert/Delete),
+# zero deps fuera de std. La 2.x es estable hace años.
+similar = "2"
+
+# === Fuzzy matching (shuma-history) ===
+# nucleo-matcher = mismo matcher que helix-editor: rápido, Unicode-correct,
+# bonus por prefijos, ranking estable. La versión 0.3 expone el API simple
+# que necesitamos (Matcher + Pattern + score).
+nucleo-matcher = "0.3"
+
+# === Transporte autenticado (shuma-link) ===
+# snow = framework Noise pure-rust. Lo usamos en modo Noise_XK (cliente
+# conoce la pubkey del servidor, server descubre la del cliente y la
+# valida contra una allowlist). ChaCha20-Poly1305 + X25519 + BLAKE2s.
+# La versión 0.9 viene pinneada por libp2p, así nos alineamos.
+snow = "0.9"
+hex = "0.4"
+
+# === PTY + emulador de terminal (shuma-exec, módulos REPL) ===
+# portable-pty aloja un PTY cross-platform; lo usamos para los
+# comandos TUI tipo vim/htop/less que necesitan un terminal de verdad.
+# vt100 parsea la secuencia de bytes que el PTY emite (ANSI + cursor
+# movement + erase + screen state) y mantiene un buffer de pantalla
+# renderizable como grid.
+portable-pty = "0.9"
+vt100 = "0.16"
+
+# === WASM web (gioser) ===
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = "0.3"
+glam = "0.30"
+
+# === Markdown (pluma) ===
+pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
+
+# === Archivos comprimidos (nahual archive viewer) ===
+# Sólo listamos el directorio central (nombres/tamaños); no descomprimimos,
+# por eso default-features=false alcanza para ZIP. Para tar.gz sí
+# descomprimimos en streaming con flate2 (ya declarado arriba), saltando
+# los datos de cada entrada — sólo leemos headers.
+zip = { version = "2.4", default-features = false }
+tar = { version = "0.4", default-features = false }
+
+# === Fuentes (nahual font viewer) ===
+# Parseo de TTF/OTF/TTC y extracción de contornos de glifo a paths.
+ttf-parser = "0.25"
+
+# ============================================================
+# Intra-workspace deps de nahual (referenciadas por workspace = true)
+# ============================================================
+nahual-text-viewer-llimphi = { path = "02_ruway/nahual/nahual-text-viewer-llimphi" }
+nahual-image-viewer-llimphi = { path = "02_ruway/nahual/nahual-image-viewer-llimphi" }
+nahual-thumb-core = { path = "02_ruway/nahual/nahual-thumb-core" }
+nahual-gallery-llimphi = { path = "02_ruway/nahual/nahual-gallery-llimphi" }
+nahual-video-viewer-llimphi = { path = "02_ruway/nahual/nahual-video-viewer-llimphi" }
+nahual-card-viewer-llimphi = { path = "02_ruway/nahual/nahual-card-viewer-llimphi" }
+nahual-audio-viewer-llimphi = { path = "02_ruway/nahual/nahual-audio-viewer-llimphi" }
+nahual-tree-viewer-llimphi = { path = "02_ruway/nahual/nahual-tree-viewer-llimphi" }
+nahual-hex-viewer-llimphi = { path = "02_ruway/nahual/nahual-hex-viewer-llimphi" }
+nahual-table-viewer-llimphi = { path = "02_ruway/nahual/nahual-table-viewer-llimphi" }
+nahual-markdown-viewer-llimphi = { path = "02_ruway/nahual/nahual-markdown-viewer-llimphi" }
+nahual-archive-viewer-llimphi = { path = "02_ruway/nahual/nahual-archive-viewer-llimphi" }
+nahual-font-viewer-llimphi = { path = "02_ruway/nahual/nahual-font-viewer-llimphi" }
+nahual-map-viewer-llimphi = { path = "02_ruway/nahual/nahual-map-viewer-llimphi" }
+nahual-geo-core = { path = "02_ruway/nahual/nahual-geo-core" }
+nahual-viewer-core = { path = "02_ruway/nahual/nahual-viewer-core" }
+nahual-file-explorer-llimphi = { path = "02_ruway/nahual/nahual-file-explorer-llimphi" }
+
+# ============================================================
+# Intra-workspace deps de pineal (módulo de gráficos)
+# ============================================================
+pineal-core = { path = "00_unanchay/pineal/pineal-core" }
+pineal-render = { path = "00_unanchay/pineal/pineal-render" }
+pineal-cartesian = { path = "00_unanchay/pineal/pineal-cartesian" }
+pineal-stream = { path = "00_unanchay/pineal/pineal-stream" }
+pineal-mesh = { path = "00_unanchay/pineal/pineal-mesh" }
+pineal-financial = { path = "00_unanchay/pineal/pineal-financial" }
+pineal-polar = { path = "00_unanchay/pineal/pineal-polar" }
+pineal-heatmap = { path = "00_unanchay/pineal/pineal-heatmap" }
+pineal-treemap = { path = "00_unanchay/pineal/pineal-treemap" }
+pineal-flow = { path = "00_unanchay/pineal/pineal-flow" }
+pineal-phosphor = { path = "00_unanchay/pineal/pineal-phosphor" }
+pineal-export = { path = "00_unanchay/pineal/pineal-export" }
+pineal-hexbin = { path = "00_unanchay/pineal/pineal-hexbin" }
+pineal-contour = { path = "00_unanchay/pineal/pineal-contour" }
+pineal-bars = { path = "00_unanchay/pineal/pineal-bars" }
+pineal = { path = "00_unanchay/pineal/pineal-umbrella" }
+
+# ============================================================
+# Intra-workspace deps de iniy (laboratorio semántico de creencias)
+# ============================================================
+iniy-core = { path = "01_yachay/iniy/iniy-core" }
+iniy-ingest = { path = "01_yachay/iniy/iniy-ingest" }
+iniy-extract = { path = "01_yachay/iniy/iniy-extract" }
+iniy-nli = { path = "01_yachay/iniy/iniy-nli" }
+iniy-nli-llm = { path = "01_yachay/iniy/iniy-nli-llm" }
+iniy-graph = { path = "01_yachay/iniy/iniy-graph" }
+iniy-store = { path = "01_yachay/iniy/iniy-store" }
+
+# === auto: declarados por crates internos faltantes ===
+cosmos-coords = { path = "01_yachay/cosmos/cosmos-coords" }
+cosmos-core = { path = "01_yachay/cosmos/cosmos-core" }
+cosmos-ephemeris = { path = "01_yachay/cosmos/cosmos-ephemeris" }
+cosmos-time = { path = "01_yachay/cosmos/cosmos-time" }
+cosmos-wcs = { path = "01_yachay/cosmos/cosmos-wcs" }
+
+# === auto: externas de eternal ===
+celestial-eop-data = { version = "0.1"}
+approx = "0.5"
+byteorder = "1.5"
+cc = "1.0"
+chrono = "0.4"
+crc32fast = "1.4"
+criterion = "0.5"
+csv = "1.4"
+flate2 = "1.0"
+glob = "0.3"
+indicatif = "0.18"
+lz4_flex = "0.11"
+memmap2 = "0.9"
+mockito = "1.0"
+ndarray = "0.15"
+num-traits = "0.2"
+once_cell = "1.19"
+parking_lot = "0.12"
+png = "0.18"
+proptest = "1.4"
+quick-xml = "0.31"
+rayon = "1.8"
+regex = "1.11"
+reqwest = "0.12"
+tiff = "0.11"
+wide = "0.7"
+wiremock = "0.6"
+
+# === i18n (rimay-localize) ===
+fluent-bundle = "0.15"
+unic-langid = { version = "0.9", features = ["macros"] }
+sys-locale = "0.3"
+
+# === Servo (puriy-engine) ===
+# Crates publicados de Servo embebibles individualmente. html5ever/markup5ever
+# ya entran via ammonia→surrealdb→nakui, así que alineamos versión para no
+# duplicar el árbol. markup5ever_rcdom es el DOM Rc-based simple (suficiente
+# para Fase 2: parsear y renderizar, sin scripting). cssparser es el tokenizer
+# CSS de Stylo, sirve para inline styles. ureq = HTTP síncrono minimalista,
+# evita pull de tokio en el engine.
+html5ever = "0.39"
+markup5ever = "0.39"
+markup5ever_rcdom = "0.39"
+cssparser = "0.35"
+url = "2"
+ureq = { version = "2", default-features = false, features = ["tls"] }
+
+# === takiy-synth (SoundFont MIDI) ===
+# rustysynth = sintetizador SF2 puro Rust, MIT. Reemplaza el oscilador
+# feo de takiy-synth por muestras reales (FluidR3, GeneralUser GS, etc).
+rustysynth = "1.3"
+
+# === takiy-playback (audio device output) ===
+# cpal = backend de audio cross-platform (ALSA/PulseAudio/Pipewire en
+# Linux, WASAPI en Windows, CoreAudio en macOS). Lo usamos sólo para
+# abrir el device default y empujar muestras f32 — nada de mezclado
+# ni efectos en el callback.
+cpal = "0.15"
+
+# === media-source-wav (decoder PCM en disco) ===
+# hound = lector/escritor WAV puro-Rust, sin deps nativas. Soporta PCM
+# entero (8/16/24/32) y float (32). Suficiente para abrir samples y
+# stems de prueba sin meter ffmpeg/symphonia.
+hound = "3.5"
+
+# === media-source-{mp3,flac,vorbis} (decoders vía symphonia) ===
+# symphonia es una colección de decoders puro-Rust mantenida. `mp3` cubre
+# media-source-mp3; `flac` (decoder + demuxer FLAC nativo) cubre
+# media-source-flac (lossless); `vorbis` + `ogg` (codec + demuxer Ogg)
+# cubren media-source-vorbis (lossy clásico, libre de patentes). Sin aac:
+# ese tier patentado entra por shared/foreign-av.
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "flac", "vorbis", "ogg"] }
+
+# === media-source-opus (decoder Opus NATIVO puro-Rust) ===
+# Opus es el formato de audio nativo de gioser (par del video AV1). ogg
+# demuxea las páginas Ogg; opus-wave es un port puro-Rust de libopus
+# (SILK+CELT, sin C ni FFI) — par del rav1d del lado video.
+ogg = "0.9"
+opus-wave = "3"
+
+# === media-source-webm (demux nativo Matroska/WebM) ===
+# matroska-demuxer es un demuxer puro-Rust de MKV/WebM (EBML). Saca los
+# paquetes de los tracks V_AV1 y A_OPUS para alimentar a media-source-av1
+# y media-source-opus — un .webm AV1+Opus se reproduce 100% nativo.
+matroska-demuxer = "0.7"
