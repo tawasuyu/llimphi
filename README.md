@@ -4,6 +4,12 @@
 
 `llimphi` is a sovereign, retained-mode UI framework with an Elm-style loop (`input → update → view → layout → raster → present`). Declarative pipeline over `vello` + `wgpu` + `taffy` + `parley`, with `Dark/Light/Aurora/Sunset` themes and a multi-platform HAL (Wayland · X11 · Win32 · Android · Wawa bare-metal). It powers a full Rust application suite; this repository is the framework extracted to stand on its own.
 
+<p align="center">
+  <img src="docs/counter.gif" alt="counter example — the full Elm loop in ~124 LOC" width="480">
+  <br>
+  <sub><code>cargo run -p llimphi-ui --example counter</code></sub>
+</p>
+
 **Usage manual:** [MANUAL.md](MANUAL.md) — full reference (Elm loop, `View<Msg>` DSL, the ~44 widgets and 10 modules, GPU path, gotchas) for humans and AI. Design rationale and roadmap: [SDD.md](SDD.md).
 
 Philosophy: **widgets aren't designed against mockups; they're designed with what `vello` and `taffy` can do.**
