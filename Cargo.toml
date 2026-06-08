@@ -25,7 +25,7 @@ rust-version = "1.80"
 license = "MIT"
 authors = ["Sergio <gerencia@jlsoltech.com>"]
 publish = false
-repository = "https://gitea.gioser.net/sergio/llimphi"
+repository = "https://git.gioser.net/tawasuyu/llimphi"
 
 [workspace.dependencies]
 # === Registro de apps / menú global ===
