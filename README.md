@@ -17,7 +17,7 @@ Philosophy: **widgets aren't designed against mockups; they're designed with wha
 ## Quick start
 
 ```sh
-git clone https://gitea.gioser.net/sergio/llimphi.git
+git clone https://git.tawasuyu.net/tawasuyu/llimphi.git
 cd llimphi
 cargo run -p llimphi-ui --example counter   # ~124 LOC: the full Elm loop on screen
 ```
@@ -26,10 +26,10 @@ cargo run -p llimphi-ui --example counter   # ~124 LOC: the full Elm loop on scr
 
 ```toml
 [dependencies]
-llimphi-ui    = { git = "https://gitea.gioser.net/sergio/llimphi.git" }
-llimphi-theme = { git = "https://gitea.gioser.net/sergio/llimphi.git" }
+llimphi-ui    = { git = "https://git.tawasuyu.net/tawasuyu/llimphi.git" }
+llimphi-theme = { git = "https://git.tawasuyu.net/tawasuyu/llimphi.git" }
 # widgets are one crate each — pull only what you use:
-llimphi-widget-button = { git = "https://gitea.gioser.net/sergio/llimphi.git" }
+llimphi-widget-button = { git = "https://git.tawasuyu.net/tawasuyu/llimphi.git" }
 ```
 
 ## Compatibility
