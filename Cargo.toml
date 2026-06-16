@@ -25,7 +25,7 @@ rust-version = "1.80"
 license = "MIT"
 authors = ["Sergio <gerencia@jlsoltech.com>"]
 publish = false
-repository = "https://git.gioser.net/tawasuyu/llimphi"
+repository = "https://git.tawasuyu.net/tawasuyu/llimphi"
 
 [workspace.dependencies]
 # === Registro de apps / menú global ===
