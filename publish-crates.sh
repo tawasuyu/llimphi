@@ -1,29 +1,22 @@
 #!/usr/bin/env bash
-# Publica llimphi a crates.io en orden de dependencias (deps primero).
-#
-# ANTES de correr (una sola vez):
-#   1) Andá a https://crates.io/settings/tokens y creá un token (login con GitHub).
-#   2) cargo login <tu-token>
-#
-# Después: ./publish-crates.sh
-# Es reanudable: si se corta (rate-limit, red), volvé a correrlo — los ya
-# publicados se saltan solos.
+# Publica llimphi a crates.io en orden de dependencias, esperando solo en rate-limit.
+# REQUIERE: cargo login <token>  (una vez).  Uso: ./publish-crates.sh
+# Reanudable: salta los ya publicados; en 429 espera 11 min y reintenta el mismo.
 set -u
 cd "$(dirname "$0")"
 while read -r c; do
   [ -z "$c" ] && continue
-  echo ">>> publicando $c"
-  if out=$(cargo publish -p "$c" 2>&1); then
-    echo "    ok"
-  else
-    if echo "$out" | grep -qiE "already (been )?uploaded|already exists|crate version .* is already"; then
-      echo "    (ya estaba publicado, sigo)"
-    else
-      echo "$out" | tail -8
-      echo "!!! se detuvo en: $c  — revisá el error de arriba, arreglá y re-corré el script"
-      exit 1
+  while true; do
+    echo ">>> publicando $c"
+    if out=$(cargo publish -p "$c" 2>&1); then echo "    ok"; break; fi
+    if echo "$out" | grep -qiE "already (been )?uploaded|already exists|is already"; then
+      echo "    (ya estaba, sigo)"; break
     fi
-  fi
+    if echo "$out" | grep -qiE "429|Too Many Requests|rate.?limit"; then
+      echo "    rate-limit; espero 11 min y reintento $c…"; sleep 660; continue
+    fi
+    echo "$out" | tail -8; echo "!!! error real en $c — corregir y re-correr"; exit 1
+  done
   sleep 3
 done < PUBLISH-ORDER.txt
 echo "=== TODO PUBLICADO ==="
