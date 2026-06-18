@@ -15,7 +15,7 @@ description = "Demo Android Tier 1: pinta la pantalla con LEAD_GRAY usando llimp
 crate-type = ["cdylib"]
 
 [dependencies]
-llimphi-hal = { path = "../../llimphi-hal" }
+llimphi-hal = { path = "../../llimphi-hal", version = "0.1.0" }
 # Activamos el feature de NativeActivity en winit para que linkee con la
 # clase NativeActivity del NDK y reciba eventos de surface/input desde la
 # Activity Java/Kotlin generada por android-activity.

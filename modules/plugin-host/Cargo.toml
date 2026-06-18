@@ -9,7 +9,7 @@ repository.workspace = true
 description = "llimphi-plugin-host — runtime de plugins WASM (Tier 2) para apps Llimphi. Carga .wasm + manifest.toml, aplica sandbox por card_core::Permissions, e invoca capabilities devolviendo PluginAction."
 
 [dependencies]
-card-core = { path = "../../../../shared/card/card-core" }
+card-core = { path = "../../../../shared/card/card-core", version = "0.1.0" }
 wasmi = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }

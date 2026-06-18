@@ -10,4 +10,4 @@ description = "llimphi-theme — paleta compartida entre apps Llimphi. Define lo
 
 [dependencies]
 # Reexporta peniko::Color para que las apps consuman sin pull-in directo.
-llimphi-raster = { path = "../llimphi-raster" }
+llimphi-raster = { path = "../llimphi-raster", version = "0.1.0" }

@@ -9,7 +9,7 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
-llimphi-hal = { path = "../llimphi-hal" }
+llimphi-hal = { path = "../llimphi-hal", version = "0.1.0" }
 vello = { workspace = true }
 # Renderer "hybrid" CPU+GPU sin compute shaders. Útil para targets sin
 # WebGPU completo (WebGL2, Adreno/Mali viejas) — alinea con el plan

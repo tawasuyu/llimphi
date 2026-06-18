@@ -11,5 +11,5 @@ description = "llimphi-module-shuma-term — terminal integrado tipo Ctrl+\\` de
 [dependencies]
 llimphi-ui = { workspace = true }
 llimphi-theme = { workspace = true }
-shuma-exec = { path = "../../../shuma/sandbox/shuma-exec" }
+shuma-exec = { path = "../../../shuma/sandbox/shuma-exec", version = "0.1.0" }
 vt100 = { workspace = true }

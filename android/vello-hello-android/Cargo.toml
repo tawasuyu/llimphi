@@ -12,8 +12,8 @@ description = "Tier 1.5 Android: vello + llimphi-raster pintando una chacana ani
 crate-type = ["cdylib"]
 
 [dependencies]
-llimphi-hal = { path = "../../llimphi-hal" }
-llimphi-raster = { path = "../../llimphi-raster" }
+llimphi-hal = { path = "../../llimphi-hal", version = "0.1.0" }
+llimphi-raster = { path = "../../llimphi-raster", version = "0.1.0" }
 winit = { workspace = true, features = ["android-native-activity"] }
 wgpu.workspace = true
 vello.workspace = true

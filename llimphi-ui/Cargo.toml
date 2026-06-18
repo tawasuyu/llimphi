@@ -9,12 +9,12 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
-llimphi-hal = { path = "../llimphi-hal" }
-llimphi-layout = { path = "../llimphi-layout" }
-llimphi-raster = { path = "../llimphi-raster" }
-llimphi-text = { path = "../llimphi-text" }
+llimphi-hal = { path = "../llimphi-hal", version = "0.1.0" }
+llimphi-layout = { path = "../llimphi-layout", version = "0.1.0" }
+llimphi-raster = { path = "../llimphi-raster", version = "0.1.0" }
+llimphi-text = { path = "../llimphi-text", version = "0.1.0" }
 # El compositor declarativo (winit-free): View, mount, paint, hit-test.
-llimphi-compositor = { path = "../llimphi-compositor" }
+llimphi-compositor = { path = "../llimphi-compositor", version = "0.1.0" }
 pollster = { workspace = true }
 # Árbol de accesibilidad por frame (NVDA/VoiceOver/Orca/TalkBack). Lo
 # alimentamos desde `View::semantics` + el árbol Mounted. `accesskit_winit`

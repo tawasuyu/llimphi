@@ -11,4 +11,4 @@ description = "llimphi-workspace — chasis genérico estilo tmux: hospeda N pan
 [dependencies]
 llimphi-ui = { workspace = true }
 llimphi-theme = { workspace = true }
-llimphi-widget-panes = { path = "../widgets/panes" }
+llimphi-widget-panes = { path = "../widgets/panes", version = "0.1.0" }
