@@ -10,12 +10,13 @@ members = [
     "llimphi-ui", "llimphi-theme", "llimphi-surface", "llimphi-motion",
     "llimphi-icons", "llimphi-compositor", "llimphi-workspace",
     "widgets/*", "modules/*", "shared/app-bus",
+    "llimphi-3d", "llimphi-voxel", "shared/foreign-vox",
 ]
 exclude = [
     "android",
     "llimphi-gallery", "llimphi-gpu-bench",
     "widgets/gallery",
-    "modules/shuma-term", "modules/plugin-host",
+    "modules/shuma-term", "modules/plugin-host", "modules/allichay",
 ]
 
 [workspace.package]
@@ -30,6 +31,7 @@ repository = "https://git.tawasuyu.net/tawasuyu/llimphi"
 [workspace.dependencies]
 # === Registro de apps / menú global ===
 app-bus = { path = "shared/app-bus" }
+foreign-vox = { path = "shared/foreign-vox" }
 # === Serialización ===
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -158,14 +160,17 @@ tempfile = "3"
 # vello 0.5 = rasterizador vectorial sobre wgpu 24.
 # taffy 0.9 = motor Flexbox/Grid puro Rust (ya pulled por transitivos, lo alineamos).
 # parley 0.2 = shaping/layout de texto compatible con peniko 0.4 (que vello 0.5 expone).
-wgpu = "24"
+wgpu = "27"
 winit = "0.30"
 raw-window-handle = "0.6"
 pollster = "0.4"
-vello = "0.5"
+vello = "0.7"
 taffy = "0.9"
 # parley = shaping completo (bidi, ligatures, fallback CJK/emoji vía fontique, line break).
-parley = "0.4"
+parley = "0.6"
+accesskit = "0.24"
+accesskit_winit = "0.33"
+vello_hybrid = "0.0.9"
 # Bucle Elm (input→update→view→layout→raster→present). Lo consumen las apps.
 llimphi-ui = { path = "llimphi-ui" }
 # Paleta semántica compartida por las apps y los widgets.

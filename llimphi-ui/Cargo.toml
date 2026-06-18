@@ -14,6 +14,24 @@ llimphi-text = { path = "../llimphi-text" }
 # El compositor declarativo (winit-free): View, mount, paint, hit-test.
 llimphi-compositor = { path = "../llimphi-compositor" }
 pollster = { workspace = true }
+# Árbol de accesibilidad por frame (NVDA/VoiceOver/Orca/TalkBack). Lo
+# alimentamos desde `View::semantics` + el árbol Mounted. `accesskit_winit`
+# es el adapter que conecta el árbol a la API nativa del SO vía winit.
+accesskit = { workspace = true }
+accesskit_winit = { workspace = true }
+# `accesskit::TreeId` envuelve un `uuid::Uuid` — generamos uno por proceso
+# para identificar el árbol entre actualizaciones (el lector lo necesita
+# para distinguir nuestra app de otras ventanas AccessKit del SO).
+uuid = { version = "1", features = ["v4"] }
+# Portapapeles del sistema para copiar texto seleccionado fuera del editor
+# (Ctrl/Cmd+C). Best-effort: si no hay backend (headless, android) degrada a
+# no-op sin panicar. Feature `clipboard` (default) para que builds sin display
+# o targets sin arboard puedan apagarlo con --no-default-features.
+arboard = { workspace = true, optional = true }
+
+[features]
+default = ["clipboard"]
+clipboard = ["dep:arboard"]
 
 [[example]]
 name = "counter"
@@ -26,3 +44,11 @@ path = "examples/editor.rs"
 [[example]]
 name = "gpu_paint_demo"
 path = "examples/gpu_paint_demo.rs"
+
+[[example]]
+name = "gestos"
+path = "examples/gestos.rs"
+
+[[example]]
+name = "selectable_text"
+path = "examples/selectable_text.rs"

@@ -80,12 +80,14 @@ impl SliderPalette {
             track_hover: t.bg_button_hover,
             fg_label: t.fg_muted,
             fg_value: t.fg_text,
-            radius: 3.0,
-            row_height: 22.0,
+            radius: 5.0,
+            row_height: 26.0,
             label_width: 80.0,
             value_width: 56.0,
             track_width: 120.0,
-            track_thickness: 6.0,
+            // Más grueso (antes 6px): más fácil de agarrar y arrastrar con pulso
+            // tembloroso. El área de drag = todo el track.
+            track_thickness: 12.0,
         }
     }
 }
@@ -108,15 +110,32 @@ where
     Msg: Clone + Send + Sync + 'static,
     F: Fn(DragPhase, f32) -> Option<Msg> + Send + Sync + 'static,
 {
+    let label: String = label.into();
+    let aria_label = label.clone();
     let range = (max - min).max(f32::EPSILON);
     let ratio = ((value - min) / range).clamp(0.0, 1.0);
     let track_width = palette.track_width.max(1.0);
 
     // Drag: dx_pixels → dv_value. Escala FIJA (no depende del valor actual).
+    //
+    // Los deltas que llegan son **por evento** (no acumulados desde el press), y
+    // durante un drag el runtime reusa ESTE handler (la vista queda congelada)
+    // → si pasáramos el delta crudo, el caller (que hace `valor_base + dv`)
+    // sumaría sólo el último evento al valor de inicio y el slider quedaba «casi
+    // estático». Por eso ACUMULAMOS los deltas dentro de la instancia del
+    // handler y pasamos el total desde el press: `base + total` = posición real.
+    // (Si en cambio la vista se repinta por evento, cada handler nuevo arranca
+    // el acumulador en 0 y el `base` ya viene fresco → también correcto.)
     let span = max - min;
+    let acumulado = std::sync::Arc::new(std::sync::Mutex::new(0.0_f32));
     let handler = move |phase: DragPhase, dx: f32, _dy: f32| -> Option<Msg> {
-        let dv = dx * span / track_width;
-        on_change(phase, dv)
+        let mut acc = acumulado.lock().unwrap_or_else(|e| e.into_inner());
+        *acc += dx * span / track_width;
+        let total = *acc;
+        if matches!(phase, DragPhase::End) {
+            *acc = 0.0; // listo para el próximo drag
+        }
+        on_change(phase, total)
     };
 
     // Bloque del label.
@@ -129,7 +148,7 @@ where
         align_items: Some(AlignItems::Center),
         ..Default::default()
     })
-    .text_aligned(label.into(), 12.0, palette.fg_label, Alignment::Start);
+    .text_aligned(label, 12.0, palette.fg_label, Alignment::Start);
 
     // Track draggable: fill = track bg, hijo = porción rellena (accent).
     let filled_radius = palette.radius;
@@ -200,6 +219,7 @@ where
 
     // Bloque del valor.
     let value_text = format_value(value);
+    let aria_value = value_text.clone();
     let value_view = View::new(Style {
         size: Size {
             width: length(palette.value_width),
@@ -224,6 +244,11 @@ where
         },
         ..Default::default()
     })
+    // Semántica: rol Slider + label + value (texto formateado). El lector
+    // dice "<label>, deslizador, <valor>" — exactamente lo esperado.
+    .role(llimphi_ui::Role::Slider)
+    .aria_label(aria_label)
+    .aria_value(aria_value)
     .children(vec![label_view, track_cell, value_view])
 }
 

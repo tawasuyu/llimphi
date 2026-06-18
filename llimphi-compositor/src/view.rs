@@ -7,12 +7,22 @@ impl<Msg> View<Msg> {
             fill: None,
             hover_fill: None,
             radius: 0.0,
+            corner_radii: None,
+            shadow: None,
+            fill_gradient: None,
+            border: None,
             text: None,
             image: None,
+            image_fit: None,
+            mask_image: None,
+            mask_placement: None,
+            mask_extra: Vec::new(),
             painter: None,
             gpu_painter: None,
+            over_painter: None,
             on_pointer_enter: None,
             on_pointer_leave: None,
+            on_pointer_move_at: None,
             on_click: None,
             on_click_at: None,
             on_right_click: None,
@@ -20,17 +30,154 @@ impl<Msg> View<Msg> {
             on_middle_click: None,
             drag: None,
             drag_at: None,
+            drag_velocity: None,
             drag_payload: None,
             on_drop: None,
             drop_hover_fill: None,
             clip: false,
+            clip_inset: None,
+            clip_ellipse: None,
+            clip_polygon: None,
+            clip_path_svg: None,
+            clip_ref_inset: None,
             on_scroll: None,
+            on_scale: None,
+            on_rotate: None,
+            on_double_tap: None,
+            on_double_tap_at: None,
+            on_long_press: None,
+            on_long_press_at: None,
             focusable: None,
+            text_select_key: None,
             alpha: None,
+            anim: None,
+            animated_size: None,
+            semantics: None,
+            hero: None,
             transform: None,
+            transform_rel: None,
+            transform_origin: None,
             tooltip: None,
+            cursor: None,
+            ripple: None,
+            layout_builder: None,
+            backdrop_blur: None,
+            filter: Vec::new(),
+            blend: None,
             children: Vec::new(),
         }
+    }
+
+    /// Aplica un **backdrop blur** Gaussiano al contenido pintado **debajo**
+    /// de este nodo, restringido al rect del nodo (CSS `backdrop-filter:
+    /// blur(N)` / Flutter `BackdropFilter`). El runtime descompone el árbol
+    /// en "fondo + subárbol del nodo", renderiza el fondo a la intermediate,
+    /// borronea el rect con un Gauss separable, y compone el subárbol del
+    /// nodo sobre el backdrop borroso vía un buffer secundario. Útil para
+    /// chrome translúcido: sidebars/topbars con "vidrio esmerilado".
+    ///
+    /// `sigma` (pixels) controla el ancho del kernel — `4.0` "frosted glass"
+    /// suave; `8.0`–`16.0` un blur fuerte; >`20` se ve apagado. v1 capa el
+    /// radius efectivo a 32 pixels (sigma > 10 empieza a clipear cola).
+    ///
+    /// **Limitación v1**: sólo nodos top-level (children directos del root o
+    /// de un agrupador sin `clip`/`alpha`) renderizan correctamente — un
+    /// nodo dentro de una capa clippeada se pinta SIN clip en su pase, por
+    /// el reset de layer-stack al cambiar de scene. Documentado en
+    /// `PARIDAD-FLUTTER.md` Bloque 11.
+    pub fn backdrop_blur(mut self, sigma: f32) -> Self {
+        self.backdrop_blur = Some(sigma.max(0.0));
+        self
+    }
+
+    /// Aplica una lista de **filtros CSS** (`filter: …`) al **propio subárbol**
+    /// del nodo (a diferencia de [`Self::backdrop_blur`], que afecta lo pintado
+    /// *debajo*). El runtime los recolecta con [`collect_filters`] y los aplica
+    /// como post-pasada GPU sobre la intermediate, restringidos al rect del
+    /// nodo, en el orden de la lista. Hoy sólo se modela `blur` ([`FilterOp`]);
+    /// la lista crece por fase. Es **ortogonal** a clip/mask (un nodo puede
+    /// llevar todos). Lista vacía = sin filtro. Fase 7.1232.
+    ///
+    /// **Limitación v1** (igual que `backdrop_blur`): la post-pasada opera sobre
+    /// los píxeles finales del rect, así que no aísla el subárbol del fondo que
+    /// asome detrás. Adecuado para nodos opacos.
+    pub fn filter(mut self, ops: Vec<FilterOp>) -> Self {
+        self.filter = ops;
+        self
+    }
+
+    /// Mezcla el **nodo entero** (su subárbol) contra su backdrop con el modo
+    /// `bm` (CSS `mix-blend-mode`). El runtime abre una capa aislada
+    /// (`push_layer(bm, …)`) alrededor del rect del nodo que envuelve fill +
+    /// contenido + hijos; al cerrarla, el subárbol se compone contra todo lo
+    /// pintado antes en el stacking context según `bm` (p. ej. `Mix::Multiply`).
+    /// Es **ortogonal** a clip/mask/filter/alpha (un nodo puede llevar todos).
+    /// Fase 7.1237.
+    ///
+    /// **Limitación v1** (igual que mask/filter): el backdrop es lo que ya está
+    /// pintado en la escena, no un fondo aislado del subárbol — exacto cuando
+    /// debajo hay contenido opaco, aproximado si la capa de abajo es el padre.
+    pub fn blend(mut self, bm: BlendMode) -> Self {
+        self.blend = Some(bm);
+        self
+    }
+
+    /// Construye los hijos de este nodo **de forma diferida**, en función del
+    /// tamaño del slot que el layout le asigne (Flutter `LayoutBuilder`). El
+    /// runtime resuelve primero el rect del nodo (una pasada de layout con este
+    /// nodo como hoja, sized por su `Style`/contexto flex) y recién entonces
+    /// invoca `builder(Constraints)` para producir el subárbol — habilitando
+    /// paneles responsive cuyo punto de quiebre depende del **espacio local**,
+    /// no de la ventana (para eso alcanza `on_resize` + el Model).
+    ///
+    /// El `Style` de este nodo define su tamaño (debe quedar acotado por el
+    /// contexto: `flex_grow`, `size` definido o `percent` — no intrínseco a los
+    /// hijos, que aún no existen). Cualquier `children` estático que se haya
+    /// seteado se ignora: el builder es la fuente de los hijos.
+    ///
+    /// **Límite v1**: sin anidamiento — un `layout_builder` dentro del subárbol
+    /// que produce otro `layout_builder` no se resuelve (queda como hoja).
+    pub fn layout_builder<F>(mut self, builder: F) -> Self
+    where
+        F: Fn(Constraints) -> View<Msg> + Send + Sync + 'static,
+    {
+        self.layout_builder = Some(Arc::new(builder));
+        self
+    }
+
+    /// Marca este nodo para emitir un **ripple/InkWell** (la salpicadura de tap
+    /// de Material) al recibir un press: un círculo que se expande desde el
+    /// punto presionado y se desvanece, recortado al contorno del nodo. `key`
+    /// debe ser **estable** entre rebuilds del `View` (índice/hash del item),
+    /// igual que la key de [`Self::animated`]. `color` es el tinte de la onda —
+    /// usá un color semitransparente (blanco a alpha ~0.25 sobre superficies
+    /// oscuras, negro a alpha ~0.12 sobre claras); su alpha se atenúa con el
+    /// fade. Es **aditivo**: convive con `on_click`/`drag` sin pisarlos. Duración
+    /// por defecto 450 ms; para otra usar [`Self::ripple_styled`].
+    pub fn ripple(self, key: u64, color: Color) -> Self {
+        self.ripple_styled(key, color, std::time::Duration::from_millis(450))
+    }
+
+    /// Como [`Self::ripple`] pero con la duración explícita de la salpicadura.
+    pub fn ripple_styled(
+        mut self,
+        key: u64,
+        color: Color,
+        duration: std::time::Duration,
+    ) -> Self {
+        self.ripple = Some(Ripple { key, color, duration });
+        self
+    }
+
+    /// Fija la forma del puntero del mouse mientras el cursor está sobre este
+    /// nodo (o un descendiente que no declare la suya — se hereda del ancestro
+    /// más cercano que la tenga). El runtime la resuelve en el hit-test de hover
+    /// y la aplica a la ventana. Ejemplos: `.cursor(Cursor::Text)` en un input,
+    /// `.cursor(Cursor::ColResize)` en un divisor de splitter,
+    /// `.cursor(Cursor::Pointer)` en un botón.
+    pub fn cursor(mut self, cursor: Cursor) -> Self {
+        self.cursor = Some(cursor);
+        self
     }
 
     /// Asocia un texto de **tooltip** a este nodo. Llimphi sólo lo transporta
@@ -39,6 +186,106 @@ impl<Msg> View<Msg> {
     /// localizar el nodo bajo el cursor con el hit-test de hover.
     pub fn tooltip(mut self, text: impl Into<String>) -> Self {
         self.tooltip = Some(text.into());
+        self
+    }
+
+    /// Declara la **semántica accesible** completa del nodo de una vez. Usar
+    /// cuando ya tenés un [`SemanticsSpec`] armado (p. ej. construido por un
+    /// widget); para los casos puntuales preferí los atajos
+    /// [`Self::role`]/[`Self::aria_label`]/etc.
+    pub fn semantics(mut self, spec: SemanticsSpec) -> Self {
+        self.semantics = Some(spec);
+        self
+    }
+
+    /// Fija el **rol** semántico del nodo. Si ya había semántica declarada,
+    /// preserva label/value/flags y sólo sobreescribe el rol; si no, crea una
+    /// `SemanticsSpec` con sólo el rol.
+    pub fn role(mut self, role: Role) -> Self {
+        self.semantics = Some(match self.semantics.take() {
+            Some(mut s) => {
+                s.role = Some(role);
+                s
+            }
+            None => SemanticsSpec::role(role),
+        });
+        self
+    }
+
+    /// Fija el **label accesible** ("nombre" que el lector enuncia). Hace falta
+    /// cuando el contenido visible del nodo no alcanza (p. ej. un botón con
+    /// sólo un ícono). Preserva el resto de la `SemanticsSpec` si existía.
+    pub fn aria_label(mut self, label: impl Into<std::sync::Arc<str>>) -> Self {
+        let mut s = self.semantics.take().unwrap_or_default();
+        s.label = Some(label.into());
+        self.semantics = Some(s);
+        self
+    }
+
+    /// Fija la **descripción** (contexto adicional que el lector enuncia tras
+    /// el label, típicamente con un atajo). Para info que ayuda pero no es el
+    /// nombre principal — no abusar (los lectores perciben ruido).
+    pub fn aria_description(mut self, desc: impl Into<std::sync::Arc<str>>) -> Self {
+        let mut s = self.semantics.take().unwrap_or_default();
+        s.description = Some(desc.into());
+        self.semantics = Some(s);
+        self
+    }
+
+    /// Fija el **valor** (texto del input, valor del slider/spinner). Lo que
+    /// el lector lee después del label: "Volumen, 70".
+    pub fn aria_value(mut self, value: impl Into<std::sync::Arc<str>>) -> Self {
+        let mut s = self.semantics.take().unwrap_or_default();
+        s.value = Some(value.into());
+        self.semantics = Some(s);
+        self
+    }
+
+    /// Estado `checked` (checkbox/radio).
+    pub fn aria_checked(mut self, v: bool) -> Self {
+        let mut s = self.semantics.take().unwrap_or_default();
+        s.flags.checked = Some(v);
+        self.semantics = Some(s);
+        self
+    }
+
+    /// Estado `pressed` (toggle button).
+    pub fn aria_pressed(mut self, v: bool) -> Self {
+        let mut s = self.semantics.take().unwrap_or_default();
+        s.flags.pressed = Some(v);
+        self.semantics = Some(s);
+        self
+    }
+
+    /// Estado `expanded` (acordeón, menú abierto, tree row expandida).
+    pub fn aria_expanded(mut self, v: bool) -> Self {
+        let mut s = self.semantics.take().unwrap_or_default();
+        s.flags.expanded = Some(v);
+        self.semantics = Some(s);
+        self
+    }
+
+    /// Estado `disabled` — el control no responde a input.
+    pub fn aria_disabled(mut self, v: bool) -> Self {
+        let mut s = self.semantics.take().unwrap_or_default();
+        s.flags.disabled = Some(v);
+        self.semantics = Some(s);
+        self
+    }
+
+    /// Estado `readonly` — el control es visible/seleccionable pero no editable.
+    pub fn aria_readonly(mut self, v: bool) -> Self {
+        let mut s = self.semantics.take().unwrap_or_default();
+        s.flags.readonly = Some(v);
+        self.semantics = Some(s);
+        self
+    }
+
+    /// Estado `required` (campo de formulario obligatorio).
+    pub fn aria_required(mut self, v: bool) -> Self {
+        let mut s = self.semantics.take().unwrap_or_default();
+        s.flags.required = Some(v);
+        self.semantics = Some(s);
         self
     }
 
@@ -55,6 +302,85 @@ impl<Msg> View<Msg> {
         self
     }
 
+    /// Registra un handler de **pinch-to-zoom** (gesto de escala). El runtime
+    /// lo invoca cuando el cursor está sobre este nodo y el usuario hace un
+    /// gesto de escala: **Ctrl + rueda** en cualquier desktop (camino
+    /// universal) o un pinch de trackpad en macOS. El handler recibe
+    /// `(phase, factor, focal_x, focal_y)` — ver [`ScaleFn`]: `factor` es el
+    /// cambio multiplicativo incremental (`>1` agranda, `<1` achica) y
+    /// `(focal_x, focal_y)` es el punto bajo el cursor relativo al rect del
+    /// nodo, para zoomear "hacia el cursor". El típico patrón de canvas:
+    /// `Msg::Zoom { factor, fx, fy }` que multiplica la escala del viewport y
+    /// reajusta el pan para mantener el punto focal fijo. Devolver `Some(Msg)`
+    /// consume el gesto (no cae al scroll/`on_wheel`).
+    pub fn on_scale<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(GesturePhase, f32, f32, f32) -> Option<Msg> + Send + Sync + 'static,
+    {
+        self.on_scale = Some(Arc::new(handler));
+        self
+    }
+
+    /// Registra un handler de **rotación con dos dedos** (gesto de trackpad).
+    /// El runtime lo invoca cuando el cursor está sobre este nodo y el usuario
+    /// rota dos dedos en el trackpad (winit emite `RotationGesture` **sólo en
+    /// macOS**). El handler recibe `(phase, delta_radianes, focal_x, focal_y)`
+    /// — ver [`RotateFn`]: `delta_radianes` es el incremento angular (positivo
+    /// = horario) y `(focal_x, focal_y)` el punto bajo el cursor relativo al
+    /// rect del nodo, para rotar "alrededor del cursor". Patrón típico de
+    /// canvas/imagen: `Msg::Rotate { delta, fx, fy }` que acumula el ángulo del
+    /// viewport. Devolver `Some(Msg)` consume el gesto.
+    pub fn on_rotate<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(GesturePhase, f32, f32, f32) -> Option<Msg> + Send + Sync + 'static,
+    {
+        self.on_rotate = Some(Arc::new(handler));
+        self
+    }
+
+    /// Emite `msg` en **doble-tap** (dos clicks izquierdos rápidos y cercanos
+    /// sobre este nodo). Aditivo respecto de `on_click`. Ver
+    /// [`Self::on_double_tap`](#structfield.on_double_tap) (campo) para la
+    /// semántica completa; para la posición del tap usar
+    /// [`Self::on_double_tap_at`].
+    pub fn on_double_tap(mut self, msg: Msg) -> Self {
+        self.on_double_tap = Some(msg);
+        self
+    }
+
+    /// Como [`Self::on_double_tap`] pero el handler recibe la posición del
+    /// segundo tap relativa al rect del nodo `(lx, ly, w, h)` — para
+    /// zoom-to-point o seleccionar la entidad bajo el cursor. Gana sobre
+    /// `on_double_tap` si ambos están.
+    pub fn on_double_tap_at<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(f32, f32, f32, f32) -> Option<Msg> + Send + Sync + 'static,
+    {
+        self.on_double_tap_at = Some(Arc::new(handler));
+        self
+    }
+
+    /// Emite `msg` en **long-press** (mantener el botón ~500 ms sin moverse).
+    /// El runtime lo cancela si el cursor se aleja (pasó a drag) o se suelta
+    /// antes. Aditivo respecto de `on_click`/`drag`. Ver
+    /// [`Self::on_long_press`](#structfield.on_long_press) (campo); para la
+    /// posición usar [`Self::on_long_press_at`].
+    pub fn on_long_press(mut self, msg: Msg) -> Self {
+        self.on_long_press = Some(msg);
+        self
+    }
+
+    /// Como [`Self::on_long_press`] pero el handler recibe la posición del
+    /// press relativa al rect del nodo `(lx, ly, w, h)` — para abrir un menú
+    /// contextual en el punto. Gana sobre `on_long_press` si ambos están.
+    pub fn on_long_press_at<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(f32, f32, f32, f32) -> Option<Msg> + Send + Sync + 'static,
+    {
+        self.on_long_press_at = Some(Arc::new(handler));
+        self
+    }
+
     /// Marca este nodo como enfocable con el id opaco `id`. El runtime lo
     /// incluye en el orden de Tab (pre-orden del árbol) y le da foco al
     /// clickearlo; cada cambio de foco se notifica vía `App::on_focus`.
@@ -62,6 +388,48 @@ impl<Msg> View<Msg> {
     /// guardó en su `Model`.
     pub fn focusable(mut self, id: u64) -> Self {
         self.focusable = Some(id);
+        self
+    }
+
+    /// Marca este nodo de **texto** como seleccionable con el mouse fuera del
+    /// editor: arrastrar sobre él resalta el rango y Ctrl/Cmd+C lo copia al
+    /// portapapeles. `key` debe ser **estable** entre rebuilds del `View`
+    /// (índice, hash del id) — la selección vive en el runtime anclada a esa
+    /// key, no al `NodeId` (que cambia cada frame). Pensá en labels, párrafos,
+    /// celdas de tabla, salidas de consola: cualquier texto que el usuario
+    /// querría copiar sin un editor. Sólo aplica a texto **uniforme** (el de
+    /// `.text(...)`/`.text_aligned(...)`); en nodos con `runs`/`spans` no tiene
+    /// efecto (esos son del editor / RichText). Componer con el texto:
+    /// `View::new(style).text_aligned(s, 14.0, col, al).selectable(key)`.
+    pub fn selectable(mut self, key: u64) -> Self {
+        self.text_select_key = Some(key);
+        self
+    }
+
+    /// Marca este nodo como **hero shared-element** con la `key` indicada.
+    /// Cuando la misma `key` aparece en un rect distinto en el frame siguiente
+    /// (entre rutas, paneles, layouts), el runtime interpola `transform` para
+    /// "volar" del rect anterior al actual durante `duration`. La `key` debe
+    /// ser estable y única dentro del frame; idéntica semántica a la `key`
+    /// de [`Self::animated`]. Para easing distinto al ease-out cúbico default,
+    /// ver [`Self::hero_curve`].
+    pub fn hero(mut self, key: u64, duration: std::time::Duration) -> Self {
+        self.hero = Some(Hero {
+            key,
+            duration,
+            easing: ease_out_cubic,
+        });
+        self
+    }
+
+    /// Como [`Self::hero`] pero con easing explícito.
+    pub fn hero_curve(
+        mut self,
+        key: u64,
+        duration: std::time::Duration,
+        easing: fn(f32) -> f32,
+    ) -> Self {
+        self.hero = Some(Hero { key, duration, easing });
         self
     }
 
@@ -74,6 +442,25 @@ impl<Msg> View<Msg> {
     /// `@keyframes` CSS de puriy. `Affine::IDENTITY` equivale a no setear.
     pub fn transform(mut self, xf: Affine) -> Self {
         self.transform = Some(xf);
+        self
+    }
+
+    /// Traslación relativa al tamaño del propio nodo: `(fx, fy)` desplaza
+    /// `(fx · w, fy · h)` px, resueltos contra el rect computado en `paint`.
+    /// Es el `translate(<%>)` de CSS que no cabe en un `Affine` fijo (p. ej.
+    /// el centrado `translate(-50%, -50%)` ⇒ `transform_rel((-0.5, -0.5))`).
+    /// Compone con `transform` (si está) como factor más externo. Ver
+    /// [`View::transform`]. `(0.0, 0.0)` equivale a no setear.
+    pub fn transform_rel(mut self, frac: (f64, f64)) -> Self {
+        self.transform_rel = Some(frac);
+        self
+    }
+
+    /// Punto de pivote de `transform` (CSS `transform-origin`). Sin setear ⇒
+    /// centro del rect (`50% 50%`). Ver [`TransformPivot`]. Sólo tiene efecto
+    /// junto con `transform`/`transform_rel`.
+    pub fn transform_origin(mut self, pivot: crate::TransformPivot) -> Self {
+        self.transform_origin = Some(pivot);
         self
     }
 
@@ -90,6 +477,225 @@ impl<Msg> View<Msg> {
     /// cuando sea necesario (no es gratuito).
     pub fn alpha(mut self, a: f32) -> Self {
         self.alpha = Some(a.clamp(0.0, 1.0));
+        self
+    }
+
+    /// Anima de forma **implícita** las props de paint de este nodo
+    /// (hoy `fill` y `radius`): cuando su valor cambia entre frames, el
+    /// runtime interpola en `duration` con ease-out cúbico en vez de saltar
+    /// (estilo Flutter `AnimatedContainer`). `key` debe ser **estable** entre
+    /// rebuilds del `View` (índice de item, hash de id) — es lo que enlaza
+    /// "el mismo nodo" entre frames; dos nodos distintos no deben compartir
+    /// key. La primera aparición no anima; sólo los cambios posteriores. Para
+    /// otra curva, [`Self::animated_curve`].
+    pub fn animated(mut self, key: u64, duration: std::time::Duration) -> Self {
+        self.anim = Some(Anim {
+            key,
+            duration,
+            easing: ease_out_cubic,
+            enter: false,
+            exit: false,
+            enter_from_xf: None,
+            switch: None,
+        });
+        self
+    }
+
+    /// Anima de forma **implícita** el **tamaño** de este nodo (Flutter
+    /// `AnimatedSize` / Compose `animateContentSize()`). Cuando
+    /// `style.size` cambia entre frames, el runtime interpola en
+    /// `duration` con ease-out cúbico en vez de saltar — siblings y
+    /// hijos reflowean suave porque el reconciler parcha `style.size`
+    /// **antes** del layout. `key` debe ser estable entre rebuilds.
+    /// Para otra curva, [`Self::animated_size_curve`]. Bloque 15.
+    ///
+    /// **Límite v1**: ambos `style.size.width` y `style.size.height`
+    /// tienen que ser `Dimension::Length(_)`. Si una es `Percent`/`Auto`,
+    /// el nodo se monta tal cual sin animación (no hay valor en píxeles
+    /// estable para interpolar). El caller que necesite animar un nodo
+    /// flex puede envolver el contenido en un wrap con `length(...)`
+    /// fijo y mover el flex al padre.
+    pub fn animated_size(mut self, key: u64, duration: std::time::Duration) -> Self {
+        self.animated_size = Some(SizeAnim {
+            key,
+            duration,
+            easing: ease_out_cubic,
+        });
+        self
+    }
+
+    /// Como [`Self::animated_size`] pero con curva de easing custom.
+    pub fn animated_size_curve(
+        mut self,
+        key: u64,
+        duration: std::time::Duration,
+        easing: fn(f32) -> f32,
+    ) -> Self {
+        self.animated_size = Some(SizeAnim { key, duration, easing });
+        self
+    }
+
+    /// Como [`Self::animated`] pero además **anima la entrada**: la primera vez
+    /// que esta `key` aparece, su opacidad sube de 0 a su valor (`alpha` o 1.0)
+    /// en `duration` — fade-in estilo `AnimatedSwitcher`/`AnimatedVisibility`.
+    /// Útil para toasts, items de lista que aparecen, paneles que se montan,
+    /// resultados que entran. Como toda animación implícita, depende de una
+    /// `key` estable; reutilizar la key de un nodo que ya estaba NO refadea
+    /// (sólo la primera aparición anima). Para animar también la salida, ver
+    /// [`Self::animated_inout`].
+    pub fn animated_enter(mut self, key: u64, duration: std::time::Duration) -> Self {
+        self.anim = Some(Anim {
+            key,
+            duration,
+            easing: ease_out_cubic,
+            enter: true,
+            exit: false,
+            enter_from_xf: None,
+            switch: None,
+        });
+        self
+    }
+
+    /// Como [`Self::animated_enter`] pero además arranca la entrada desde una
+    /// **transformación afín** específica hacia la del nodo (o la identidad si
+    /// no setea `.transform`). Habilita scale-in / slide-in / rotate-in
+    /// implícitos: el caller declara la pose inicial, el runtime interpola.
+    /// Ejemplos:
+    ///   - `Affine::scale(0.6)` → "pop" (FAB de Material, modales).
+    ///   - `Affine::translate((0.0, 60.0))` → slide-in vertical (snackbars).
+    ///   - `Affine::translate((-w, 0.0))` → slide-in lateral (drawers).
+    /// Combina con el fade-in de entrada (`alpha 0 → opaque`). Sin animación
+    /// de salida; para entrada+salida con pose, ver
+    /// [`Self::animated_inout_from`].
+    pub fn animated_enter_from(
+        mut self,
+        key: u64,
+        duration: std::time::Duration,
+        from_xf: Affine,
+    ) -> Self {
+        self.anim = Some(Anim {
+            key,
+            duration,
+            easing: ease_out_cubic,
+            enter: true,
+            exit: false,
+            enter_from_xf: Some(from_xf),
+            switch: None,
+        });
+        self
+    }
+
+    /// Atajo Material: scale-in desde 0.6 (entrada "pop" del FAB). Combina con
+    /// fade-in. Equivalente a `.animated_enter_from(key, dur, Affine::scale(0.6))`.
+    pub fn animated_pop_in(self, key: u64, duration: std::time::Duration) -> Self {
+        self.animated_enter_from(key, duration, Affine::scale(0.6))
+    }
+
+    /// **Anima la salida** (fade-out): cuando esta `key` desaparece del árbol,
+    /// el runtime retiene la última subescena que pintó y la reproduce con
+    /// opacidad decreciente durante `duration` — estilo `AnimatedSwitcher` /
+    /// `AnimatedVisibility` al ocultarse. No anima la entrada (para ambas, ver
+    /// [`Self::animated_inout`]). Tiene coste por frame mientras el nodo vive
+    /// (captura su subárbol); usar con moderación (toasts, modales, paneles).
+    pub fn animated_exit(mut self, key: u64, duration: std::time::Duration) -> Self {
+        self.anim = Some(Anim {
+            key,
+            duration,
+            easing: ease_out_cubic,
+            enter: false,
+            exit: true,
+            enter_from_xf: None,
+            switch: None,
+        });
+        self
+    }
+
+    /// Anima **entrada y salida**: fade-in en la primera aparición y fade-out al
+    /// desmontarse, ambos en `duration`. La pieza completa de "animación de
+    /// contenido" para un nodo que aparece y desaparece (un toast, un panel que
+    /// se abre y cierra, un resultado que entra y se va).
+    pub fn animated_inout(mut self, key: u64, duration: std::time::Duration) -> Self {
+        self.anim = Some(Anim {
+            key,
+            duration,
+            easing: ease_out_cubic,
+            enter: true,
+            exit: true,
+            enter_from_xf: None,
+            switch: None,
+        });
+        self
+    }
+
+    /// Como [`Self::animated_inout`] pero arranca la entrada desde la
+    /// transformación afín `from_xf` (igual semántica que
+    /// [`Self::animated_enter_from`]). La salida sigue siendo el fade-out
+    /// estándar (la subescena retenida no transforma).
+    pub fn animated_inout_from(
+        mut self,
+        key: u64,
+        duration: std::time::Duration,
+        from_xf: Affine,
+    ) -> Self {
+        self.anim = Some(Anim {
+            key,
+            duration,
+            easing: ease_out_cubic,
+            enter: true,
+            exit: true,
+            enter_from_xf: Some(from_xf),
+            switch: None,
+        });
+        self
+    }
+
+    /// Como [`Self::animated`] pero con easing explícito (p. ej.
+    /// `llimphi_theme::motion::ease_in_out_cubic`).
+    pub fn animated_curve(
+        mut self,
+        key: u64,
+        duration: std::time::Duration,
+        easing: fn(f32) -> f32,
+    ) -> Self {
+        self.anim = Some(Anim {
+            key,
+            duration,
+            easing,
+            enter: false,
+            exit: false,
+            enter_from_xf: None,
+            switch: None,
+        });
+        self
+    }
+
+    /// Cross-fade real entre **variantes de contenido** bajo la misma `key`
+    /// (Flutter `AnimatedSwitcher`). `variant` identifica el contenido actual
+    /// (índice de pestaña, hash del estado, discriminante de un enum…). Cuando
+    /// `variant` cambia entre frames, el runtime desvanece la subescena vieja
+    /// (fade-out, retenida del frame previo) mientras hace fade-in del subárbol
+    /// nuevo, en el mismo rect — la transición real entre dos identidades, en
+    /// vez de combinar `animated_enter`+`animated_exit` de dos keys distintas.
+    ///
+    /// Envolvé el contenido conmutable en un nodo con esta marca; sus hijos son
+    /// el contenido. La primera aparición no cruza (sólo fija la variante).
+    /// Igual que `exit`, captura el subárbol por frame — usar en pocos nodos
+    /// (un panel central, un visor que cambia de documento), no por fila.
+    pub fn animated_switch(
+        mut self,
+        key: u64,
+        variant: u64,
+        duration: std::time::Duration,
+    ) -> Self {
+        self.anim = Some(Anim {
+            key,
+            duration,
+            easing: ease_out_cubic,
+            enter: false,
+            exit: false,
+            enter_from_xf: None,
+            switch: Some(variant),
+        });
         self
     }
 
@@ -123,6 +729,24 @@ impl<Msg> View<Msg> {
         F: Fn(DragPhase, f32, f32, f32, f32) -> Option<Msg> + Send + Sync + 'static,
     {
         self.drag_at = Some(Arc::new(handler));
+        self
+    }
+
+    /// Como [`Self::draggable`] pero el handler recibe además la **velocidad
+    /// del drag al soltarlo** (`vx`, `vy` en px/s) en la fase
+    /// `DragPhase::End` — `Fn(DragPhase, dx, dy, vx, vy) -> Option<Msg>`. El
+    /// runtime mide el desplazamiento sobre los últimos ~100 ms y lo divide
+    /// por el tiempo transcurrido. Durante `DragPhase::Move`, `vx == vy == 0`
+    /// (la velocidad sólo se calcula al final). **Gana sobre `draggable` y
+    /// `draggable_at`** si conviven en el mismo nodo — un nodo elige un
+    /// único sabor de drag. Habilita **fling-desde-drag**: el caller emite
+    /// `Msg::Fling { vx, vy }` en End y arranca un ticker que decae la
+    /// velocidad con [`fling_step`] hasta asentar.
+    pub fn draggable_velocity<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(DragPhase, f32, f32, f32, f32) -> Option<Msg> + Send + Sync + 'static,
+    {
+        self.drag_velocity = Some(Arc::new(handler));
         self
     }
 
@@ -160,6 +784,58 @@ impl<Msg> View<Msg> {
         self
     }
 
+    /// Radio **por esquina** (top-left, top-right, bottom-right, bottom-left,
+    /// en sentido horario desde arriba-izquierda) — CSS `border-radius` con
+    /// cuatro valores. Sobreescribe a [`Self::radius`] mientras esté presente.
+    /// Para cards con sólo las esquinas de arriba redondeadas, pestañas,
+    /// bocadillos de chat asimétricos, etc. El **borde** respeta las cuatro
+    /// esquinas; la **sombra** sigue usando el `radius` escalar (el blur
+    /// nativo de vello no acepta radios por esquina).
+    pub fn radius_corners(mut self, tl: f64, tr: f64, br: f64, bl: f64) -> Self {
+        self.corner_radii = Some(RoundedRectRadii::new(tl, tr, br, bl));
+        self
+    }
+
+    /// Proyecta una sombra detrás del nodo (drop shadow), rasterizada con
+    /// el blur gaussiano nativo de vello. Se pinta antes del relleno, así
+    /// el fill opaco la tapa y la sombra asoma por el desenfoque/offset.
+    /// El radio de la sombra sigue al del nodo (más el `spread`). Ver
+    /// [`Shadow`] (`Shadow::soft(alpha, blur)` es el default tasteful).
+    pub fn shadow(mut self, shadow: Shadow) -> Self {
+        self.shadow = Some(shadow);
+        self
+    }
+
+    /// Rellena el nodo con un **gradiente** en vez de un color sólido. El
+    /// gradiente se autorea en el **cuadrado unidad** `[0,1]²` y el runtime
+    /// lo mapea al rect del nodo (así no necesitás saber el tamaño al
+    /// construir el `View`) — igual que `Alignment` relativo de Flutter.
+    ///
+    /// ```ignore
+    /// use llimphi_ui::llimphi_raster::peniko::{Color, Gradient};
+    /// use llimphi_ui::llimphi_raster::kurbo::Point;
+    /// // vertical: arriba claro → abajo oscuro
+    /// let g = Gradient::new_linear(Point::new(0.0, 0.0), Point::new(0.0, 1.0))
+    ///     .with_stops([Color::from_rgba8(80,90,110,255), Color::from_rgba8(30,34,44,255)].as_slice());
+    /// view.fill_gradient(g)
+    /// ```
+    ///
+    /// Gana sobre `fill` como base; un `hover_fill` (color) lo sigue
+    /// overrideando mientras el cursor está encima.
+    pub fn fill_gradient(mut self, gradient: Gradient) -> Self {
+        self.fill_gradient = Some(gradient);
+        self
+    }
+
+    /// Dibuja un borde (stroke) sobre el contorno redondeado del nodo,
+    /// inset media línea hacia adentro (el grosor queda dentro del rect).
+    /// Reemplaza el viejo truco de envolver el nodo en un rect-padre del
+    /// color del borde con padding de 1px.
+    pub fn border(mut self, width: f64, color: Color) -> Self {
+        self.border = Some(Border::new(width, color));
+        self
+    }
+
     pub fn text(mut self, content: impl Into<String>, size_px: f32, color: Color) -> Self {
         self.text = Some(TextSpec {
             content: content.into(),
@@ -169,7 +845,17 @@ impl<Msg> View<Msg> {
             italic: false,
             font_family: None,
             line_height: 1.2,
+            weight: 400.0,
+            max_lines: None,
+            ellipsis: false,
             runs: None,
+            underline: false,
+            strikethrough: false,
+            letter_spacing: 0.0,
+            word_spacing: 0.0,
+            spans: None,
+            no_wrap: false,
+            overflow_wrap: false,
         });
         self
     }
@@ -189,7 +875,17 @@ impl<Msg> View<Msg> {
             italic: false,
             font_family: None,
             line_height: 1.2,
+            weight: 400.0,
+            max_lines: None,
+            ellipsis: false,
             runs: None,
+            underline: false,
+            strikethrough: false,
+            letter_spacing: 0.0,
+            word_spacing: 0.0,
+            spans: None,
+            no_wrap: false,
+            overflow_wrap: false,
         });
         self
     }
@@ -212,7 +908,17 @@ impl<Msg> View<Msg> {
             italic,
             font_family: None,
             line_height: 1.2,
+            weight: 400.0,
+            max_lines: None,
+            ellipsis: false,
             runs: None,
+            underline: false,
+            strikethrough: false,
+            letter_spacing: 0.0,
+            word_spacing: 0.0,
+            spans: None,
+            no_wrap: false,
+            overflow_wrap: false,
         });
         self
     }
@@ -237,7 +943,17 @@ impl<Msg> View<Msg> {
             italic,
             font_family,
             line_height: 1.2,
+            weight: 400.0,
+            max_lines: None,
+            ellipsis: false,
             runs: None,
+            underline: false,
+            strikethrough: false,
+            letter_spacing: 0.0,
+            word_spacing: 0.0,
+            spans: None,
+            no_wrap: false,
+            overflow_wrap: false,
         });
         self
     }
@@ -263,8 +979,70 @@ impl<Msg> View<Msg> {
             italic: false,
             font_family: None,
             line_height: 1.2,
+            weight: 400.0,
+            max_lines: None,
+            ellipsis: false,
             runs: Some(runs),
+            underline: false,
+            strikethrough: false,
+            letter_spacing: 0.0,
+            word_spacing: 0.0,
+            spans: None,
+            no_wrap: false,
+            overflow_wrap: false,
         });
+        self
+    }
+
+    /// Texto **RichText** (Bloque 13 de PARIDAD-FLUTTER, cierra Tier 2):
+    /// `content` se pinta con los defaults del bloque (`size_px`,
+    /// `default_color`, alignment, weight 400, no italic, line-height 1.2,
+    /// fuente default) y cada [`llimphi_text::TextSpan`] sobreescribe en su
+    /// rango de bytes uno o más de
+    /// `size_px`/`weight`/`italic`/`font_family`/`color`/`underline`/
+    /// `strikethrough`. Soporta wrap (el ancho lo fija el layout taffy del
+    /// nodo); apto para párrafos con un `<b>`/`<i>`/`<code>`/`<small>`
+    /// inline, links subrayados, headings dentro del mismo flujo, render
+    /// barato de markdown.
+    pub fn text_spans(
+        mut self,
+        content: impl Into<String>,
+        size_px: f32,
+        default_color: Color,
+        spans: Vec<llimphi_text::TextSpan>,
+        alignment: llimphi_text::Alignment,
+    ) -> Self {
+        self.text = Some(TextSpec {
+            content: content.into(),
+            size_px,
+            color: default_color,
+            alignment,
+            italic: false,
+            font_family: None,
+            line_height: 1.2,
+            weight: 400.0,
+            max_lines: None,
+            ellipsis: false,
+            runs: None,
+            underline: false,
+            strikethrough: false,
+            letter_spacing: 0.0,
+            word_spacing: 0.0,
+            spans: Some(spans),
+            no_wrap: false,
+            overflow_wrap: false,
+        });
+        self
+    }
+
+    /// Adjunta o reemplaza los [`TextSpec::spans`] del texto ya seteado
+    /// (RichText). Permite construir el texto con los builders uniformes
+    /// (`.text_aligned(...).bold().underline()`) y luego inyectar overrides
+    /// inline. No-op si el nodo no tiene texto.
+    pub fn with_spans(mut self, spans: Vec<llimphi_text::TextSpan>) -> Self {
+        if let Some(t) = self.text.as_mut() {
+            t.spans = Some(spans);
+        }
         self
     }
 
@@ -275,6 +1053,122 @@ impl<Msg> View<Msg> {
     pub fn line_height(mut self, mult: f32) -> Self {
         if let Some(t) = self.text.as_mut() {
             t.line_height = mult;
+        }
+        self
+    }
+
+    /// Sobreescribe el peso de fuente del texto ya seteado (default 400 =
+    /// normal). Convención CSS: 400 normal, 500 medium, 600 semibold, 700
+    /// bold. parley elige la variante más cercana de la familia activa o la
+    /// sintetiza. No-op si el nodo no tiene texto. Afecta medida y pintado.
+    pub fn text_weight(mut self, weight: f32) -> Self {
+        if let Some(t) = self.text.as_mut() {
+            t.weight = weight;
+        }
+        self
+    }
+
+    /// Atajo de [`Self::text_weight`] a 700 (bold). No-op sin texto.
+    pub fn bold(self) -> Self {
+        self.text_weight(700.0)
+    }
+
+    /// Fija la familia de fuente del texto ya seteado a la monoespaciada
+    /// embebida ([`llimphi_text::MONOSPACE`]) — ancho fijo garantizado para
+    /// que `ls`, tablas y logs columneen. No-op si el nodo no tiene texto.
+    /// Afecta medida y pintado.
+    pub fn mono(mut self) -> Self {
+        if let Some(t) = self.text.as_mut() {
+            t.font_family = Some(llimphi_text::MONOSPACE.to_string());
+        }
+        self
+    }
+
+    /// Clampa el texto a `n` líneas **sin** glifo de ellipsis (corte seco del
+    /// prefijo que cupo). CSS `-webkit-line-clamp` sin `text-overflow`. No-op
+    /// sin texto. Para el corte con `…` usar [`Self::ellipsis`]. Sólo trunca si
+    /// hay envoltura (requiere ancho acotado por el layout).
+    pub fn max_lines(mut self, n: usize) -> Self {
+        if let Some(t) = self.text.as_mut() {
+            t.max_lines = Some(n);
+            t.ellipsis = false;
+        }
+        self
+    }
+
+    /// Clampa el texto a `n` líneas terminando la última en `…` cuando excede
+    /// (CSS `text-overflow: ellipsis` + `-webkit-line-clamp: n`). Lo más común
+    /// para items de lista, celdas de tabla, breadcrumbs y labels en cajas
+    /// dimensionadas. `n = 1` es el clásico single-line ellipsis. No-op sin
+    /// texto.
+    pub fn ellipsis(mut self, n: usize) -> Self {
+        if let Some(t) = self.text.as_mut() {
+            t.max_lines = Some(n.max(1));
+            t.ellipsis = true;
+        }
+        self
+    }
+
+    /// `letter-spacing` (CSS): px **extra** entre letras (0 = normal, negativo
+    /// junta). Afecta medida y pintado. No-op sin texto. Sólo el camino
+    /// uniforme; el RichText con spans lo ignora en v1.
+    pub fn letter_spacing(mut self, px: f32) -> Self {
+        if let Some(t) = self.text.as_mut() {
+            t.letter_spacing = px;
+        }
+        self
+    }
+
+    /// `word-spacing` (CSS): px **extra** entre palabras (0 = normal). Mismo
+    /// régimen que [`Self::letter_spacing`]. No-op sin texto.
+    pub fn word_spacing(mut self, px: f32) -> Self {
+        if let Some(t) = self.text.as_mut() {
+            t.word_spacing = px;
+        }
+        self
+    }
+
+    /// `white-space: nowrap`/`pre` (CSS): el texto **no envuelve** — se shapea
+    /// en una sola línea (`break_all_lines(None)`) sin importar el ancho de la
+    /// caja, y desborda (lo recorta `overflow: hidden` si lo hay). Afecta
+    /// medida y pintado. No-op sin texto. Sólo el camino uniforme; el RichText
+    /// con spans lo ignora en v1.
+    pub fn no_wrap(mut self) -> Self {
+        if let Some(t) = self.text.as_mut() {
+            t.no_wrap = true;
+        }
+        self
+    }
+
+    /// `overflow-wrap: break-word`/`anywhere` (CSS): una palabra más ancha que
+    /// la caja se **parte** para que entre, en vez de desbordar. Afecta medida
+    /// y pintado. No-op sin texto. Sólo el camino uniforme; el RichText con
+    /// spans lo ignora en v1, igual que `no_wrap`.
+    pub fn overflow_wrap(mut self) -> Self {
+        if let Some(t) = self.text.as_mut() {
+            t.overflow_wrap = true;
+        }
+        self
+    }
+
+    /// Activa subrayado del texto (CSS `text-decoration: underline` / Flutter
+    /// `TextDecoration.underline`). parley registra la decoración por run y el
+    /// runtime pinta la línea bajo la base usando `underline_offset` y
+    /// `underline_size` del font metric — proporcional al tamaño de fuente
+    /// elegido. No-op sin texto.
+    pub fn underline(mut self) -> Self {
+        if let Some(t) = self.text.as_mut() {
+            t.underline = true;
+        }
+        self
+    }
+
+    /// Activa tachado del texto (CSS `text-decoration: line-through` /
+    /// Flutter `TextDecoration.lineThrough`). Mismo régimen que [`Self::underline`]
+    /// pero usando el strikethrough metric. No-op sin texto.
+    pub fn strikethrough(mut self) -> Self {
+        if let Some(t) = self.text.as_mut() {
+            t.strikethrough = true;
         }
         self
     }
@@ -295,6 +1189,20 @@ impl<Msg> View<Msg> {
     /// Dispatch `msg` cuando el cursor sale del rect del nodo.
     pub fn on_pointer_leave(mut self, msg: Msg) -> Self {
         self.on_pointer_leave = Some(msg);
+        self
+    }
+
+    /// Handler de **movimiento del cursor** sobre el nodo. Recibe `(local_x,
+    /// local_y, rect_w, rect_h)` (posición relativa al rect del nodo) en CADA
+    /// `CursorMoved` mientras el cursor está encima — no sólo al entrar, a
+    /// diferencia de [`Self::on_pointer_enter`]. Útil para seguir el cursor:
+    /// thumbnail de hover sobre un timeline, drawer que reacciona a la posición.
+    /// Devolver `None` no dispara update.
+    pub fn on_pointer_move_at<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(f32, f32, f32, f32) -> Option<Msg> + Send + Sync + 'static,
+    {
+        self.on_pointer_move_at = Some(Arc::new(handler));
         self
     }
 
@@ -341,13 +1249,52 @@ impl<Msg> View<Msg> {
         self
     }
 
-    /// Pinta `image` dentro del rect del nodo, centrada y escalada
-    /// preservando aspect ratio. Re-exporta `peniko::Image` vía
-    /// `llimphi_raster::peniko::Image` — el caller decodifica los
-    /// bytes con el crate `image` (u otro) y construye el `Image`
-    /// con `Blob<u8>` + `ImageFormat::Rgba8`.
+    /// Pinta `image` dentro del rect del nodo. El encaje default es
+    /// [`ImageFit::Contain`] (preservar aspect ratio cabiendo);
+    /// usar [`Self::image_fit`] para `Cover`/`Fill`/`None`. El clip
+    /// respeta `radius`/`corner_radii`, así avatares y cards
+    /// redondeadas funcionan sin envolver en `clip(true)`. Re-exporta
+    /// `peniko::Image` vía `llimphi_raster::peniko::Image` — el
+    /// caller decodifica los bytes con el crate `image` (u otro) y
+    /// construye el `Image` con `Blob<u8>` + `ImageFormat::Rgba8`.
     pub fn image(mut self, image: Image) -> Self {
         self.image = Some(image);
+        self
+    }
+
+    /// Política de encaje de la imagen (CSS `object-fit` / Flutter
+    /// `BoxFit`). Solo aplica si hay [`Self::image`] seteada. Ver
+    /// [`ImageFit`].
+    pub fn image_fit(mut self, fit: ImageFit) -> Self {
+        self.image_fit = Some(fit);
+        self
+    }
+
+    /// Aplica `image` como **máscara de luminancia** del subárbol del nodo
+    /// (CSS `mask-image`). El paint aísla el subárbol en una capa y multiplica
+    /// su alpha por la luminancia de la máscara (blanco = visible, negro =
+    /// oculto). La imagen se estira al border-box del nodo. Ortogonal a
+    /// [`Self::image`] (que pinta contenido) y a los `clip_*` (que recortan):
+    /// un nodo puede llevar máscara y recorte a la vez.
+    pub fn mask_image(mut self, image: Image) -> Self {
+        self.mask_image = Some(image);
+        self
+    }
+
+    /// Fija el encaje de la máscara (CSS `mask-size`/`-position`/`-repeat`).
+    /// Sólo surte efecto junto a [`Self::mask_image`]. Sin esto, la máscara se
+    /// estira al border-box (Fase 7.1226). Ver [`MaskPlacement`]. Fase 7.1227.
+    pub fn mask_placement(mut self, placement: MaskPlacement) -> Self {
+        self.mask_placement = Some(placement);
+        self
+    }
+
+    /// Capas de máscara adicionales `(imagen, operador)` (CSS `mask-image` con
+    /// lista). Comparten el [`Self::mask_placement`] con la capa 0
+    /// ([`Self::mask_image`]) y se combinan con ella según cada operador. Fase
+    /// 7.1231.
+    pub fn mask_extra(mut self, layers: Vec<(Image, MaskCompose)>) -> Self {
+        self.mask_extra = layers;
         self
     }
 
@@ -393,6 +1340,30 @@ impl<Msg> View<Msg> {
         self
     }
 
+    /// Registra una closure de pintura vello "over" — misma firma que
+    /// [`Self::paint_with`] `(&mut Scene, &mut Typesetter, PaintRect)`,
+    /// pero el runtime la ejecuta en una pasada vello FINAL **después**
+    /// del pase GPU directo del frame, componiéndola con alpha sobre la
+    /// intermedia. Es el complemento opt-in de [`Self::gpu_paint_with`]:
+    /// permite pintar sprites/texto AA por vello ENCIMA de las celdas
+    /// instanciadas por GPU del mismo (o de otro) nodo.
+    ///
+    /// Orden resultante del frame: `[vello base] → [gpu_paint] →
+    /// [paint_over] → [overlay/menús]`. Backward-compat total: si nadie
+    /// usa `paint_over`, no se crea la pasada final (coste cero) y el
+    /// resto del pipeline es idéntico. La closure no debe dejar
+    /// `push_layer` sin par ni resetear la escena. Ver [`OverPaintFn`].
+    pub fn paint_over<F>(mut self, painter: F) -> Self
+    where
+        F: Fn(&mut vello::Scene, &mut llimphi_text::Typesetter, PaintRect)
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.over_painter = Some(Arc::new(painter));
+        self
+    }
+
     /// Recorta los hijos al rect de este nodo (paint y hit-test). Útil
     /// para paneles con contenido virtualizado que no debe sangrar a
     /// vecinos (listas, scrollers, viewers).
@@ -401,8 +1372,382 @@ impl<Msg> View<Msg> {
         self
     }
 
+    /// Recorta los descendientes a un rect encogido por `insets` px
+    /// `[top, right, bottom, left]` desde el rect del nodo — modela
+    /// `clip-path: inset(...)`. Activa el recorte (paint + hit-test).
+    pub fn clip_inset(mut self, insets: [f32; 4]) -> Self {
+        self.clip = true;
+        self.clip_inset = Some(insets);
+        self
+    }
+
+    /// Recorta los descendientes a una elipse — modela
+    /// `clip-path: circle()`/`ellipse()`. `spec` es de 14 floats: centro
+    /// `[cx_px, cx_pct, cy_px, cy_pct]` + dos radios `[px, pct_w, pct_h,
+    /// pct_diag, side]`, todos resueltos contra el rect del nodo en el
+    /// pintado. Activa el recorte (paint; hit-test usa el rect completo).
+    pub fn clip_ellipse(mut self, spec: [f32; 14]) -> Self {
+        self.clip = true;
+        self.clip_ellipse = Some(spec);
+        self
+    }
+
+    /// Recorta los descendientes a un polígono — modela `clip-path:
+    /// polygon()`. `evenodd` = regla de relleno; cada punto `[x_px, x_pct,
+    /// y_px, y_pct]` resuelve contra el rect del nodo en el pintado. Activa el
+    /// recorte (paint; hit-test usa el rect completo).
+    pub fn clip_polygon(mut self, evenodd: bool, points: Vec<[f32; 4]>) -> Self {
+        self.clip = true;
+        self.clip_polygon = Some((evenodd, points));
+        self
+    }
+
+    /// Recorta los descendientes a un path SVG — modela `clip-path: path()`.
+    /// `d` es el string SVG crudo (user units px, relativos al origen del
+    /// rect); el pintado lo parsea con `BezPath::from_svg`. `evenodd` = regla
+    /// de relleno. Activa el recorte (paint; hit-test usa el rect completo).
+    pub fn clip_path_svg(mut self, evenodd: bool, d: impl Into<String>) -> Self {
+        self.clip = true;
+        self.clip_path_svg = Some((evenodd, d.into()));
+        self
+    }
+
+    /// Fija la caja de referencia del clip-path (`<geometry-box>`): el rect del
+    /// nodo se encoge por `insets` px `[top, right, bottom, left]` antes de
+    /// resolver la forma. Sin forma, recorta a ese rect. Activa el recorte.
+    pub fn clip_ref_inset(mut self, insets: [f32; 4]) -> Self {
+        self.clip = true;
+        self.clip_ref_inset = Some(insets);
+        self
+    }
+
     pub fn children(mut self, children: Vec<View<Msg>>) -> Self {
         self.children = children;
         self
+    }
+}
+
+#[cfg(test)]
+mod semantics_tests {
+    use super::*;
+    use llimphi_layout::Style;
+
+    #[test]
+    fn map_transforma_msg_y_recursa_hijos() {
+        // `View::map` eleva el Msg de todo el árbol (para embeber el view de un
+        // sub-app en un host). Verificamos el caso simple (on_click) en el nodo
+        // y en un hijo.
+        #[derive(Clone, PartialEq, Debug)]
+        enum Sub {
+            Hi,
+        }
+        #[derive(Clone, PartialEq, Debug)]
+        enum Host {
+            FromSub(Sub),
+        }
+        let child = View::<Sub>::new(Style::default()).on_click(Sub::Hi);
+        let parent = View::<Sub>::new(Style::default())
+            .on_click(Sub::Hi)
+            .children(vec![child]);
+        let mapped: View<Host> = parent.map(Host::FromSub);
+        assert_eq!(mapped.on_click, Some(Host::FromSub(Sub::Hi)));
+        assert_eq!(mapped.children.len(), 1);
+        assert_eq!(mapped.children[0].on_click, Some(Host::FromSub(Sub::Hi)));
+    }
+
+    #[test]
+    fn clip_inset_setea_campo_y_activa_clip() {
+        // `.clip_inset(...)` guarda los insets y activa el recorte (Fase 7.1219).
+        let v = View::<()>::new(Style::default()).clip_inset([1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(v.clip_inset, Some([1.0, 2.0, 3.0, 4.0]));
+        assert!(v.clip, "clip_inset implica clip activo");
+        // `.clip(true)` solo (overflow:hidden) deja clip_inset en None.
+        let h = View::<()>::new(Style::default()).clip(true);
+        assert!(h.clip);
+        assert_eq!(h.clip_inset, None);
+        // Default: sin recorte.
+        let d = View::<()>::new(Style::default());
+        assert!(!d.clip);
+        assert_eq!(d.clip_inset, None);
+    }
+
+    #[test]
+    fn clip_ellipse_setea_campo_y_activa_clip() {
+        // `.clip_ellipse(...)` guarda el spec de 14 floats y activa el recorte
+        // (Fase 7.1220 rect, 7.1221 radios %, 7.1222 lados).
+        let spec =
+            [0.0, 50.0, 0.0, 50.0, 30.0, 0.0, 0.0, 0.0, 0.0, 20.0, 0.0, 0.0, 0.0, 0.0];
+        let v = View::<()>::new(Style::default()).clip_ellipse(spec);
+        assert_eq!(v.clip_ellipse, Some(spec));
+        assert!(v.clip, "clip_ellipse implica clip activo");
+        // No interfiere con clip_inset (campos independientes).
+        assert_eq!(v.clip_inset, None);
+        // Default: sin elipse.
+        let d = View::<()>::new(Style::default());
+        assert_eq!(d.clip_ellipse, None);
+    }
+
+    #[test]
+    fn clip_polygon_setea_campo_y_activa_clip() {
+        // `.clip_polygon(...)` guarda (evenodd, puntos) y activa el recorte
+        // (Fase 7.1223).
+        let pts = vec![[0.0, 0.0, 0.0, 0.0], [0.0, 100.0, 0.0, 0.0], [0.0, 50.0, 0.0, 100.0]];
+        let v = View::<()>::new(Style::default()).clip_polygon(true, pts.clone());
+        assert_eq!(v.clip_polygon, Some((true, pts)));
+        assert!(v.clip, "clip_polygon implica clip activo");
+        // No interfiere con elipse/inset.
+        assert_eq!(v.clip_ellipse, None);
+        assert_eq!(v.clip_inset, None);
+        // Default: sin polígono.
+        assert_eq!(View::<()>::new(Style::default()).clip_polygon, None);
+    }
+
+    #[test]
+    fn clip_path_svg_setea_campo_y_activa_clip() {
+        // `.clip_path_svg(...)` guarda (evenodd, d) y activa el recorte
+        // (Fase 7.1224). El string SVG debe parsear con kurbo.
+        let v = View::<()>::new(Style::default()).clip_path_svg(false, "M0 0 L10 0 L10 10 Z");
+        assert_eq!(v.clip_path_svg, Some((false, "M0 0 L10 0 L10 10 Z".to_string())));
+        assert!(v.clip, "clip_path_svg implica clip activo");
+        // El path de muestra parsea a un BezPath no vacío.
+        let bez = vello::kurbo::BezPath::from_svg("M0 0 L10 0 L10 10 Z").unwrap();
+        assert!(!bez.elements().is_empty());
+        // Default: sin path.
+        assert_eq!(View::<()>::new(Style::default()).clip_path_svg, None);
+    }
+
+    #[test]
+    fn clip_ref_inset_setea_campo_y_activa_clip() {
+        // `.clip_ref_inset(...)` guarda la caja de referencia y activa el
+        // recorte (Fase 7.1225).
+        let v = View::<()>::new(Style::default()).clip_ref_inset([5.0, 5.0, 5.0, 5.0]);
+        assert_eq!(v.clip_ref_inset, Some([5.0, 5.0, 5.0, 5.0]));
+        assert!(v.clip, "clip_ref_inset implica clip activo");
+        // Default: sin caja de referencia.
+        assert_eq!(View::<()>::new(Style::default()).clip_ref_inset, None);
+    }
+
+    #[test]
+    fn mask_image_setea_campo_sin_tocar_clip() {
+        // `.mask_image(img)` guarda la imagen-máscara para que el paint la
+        // aplique como luminancia sobre el subárbol. Es ORTOGONAL al recorte:
+        // NO activa `clip` (a diferencia de los `clip_*`). Fase 7.1226.
+        use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+        let data = ImageData {
+            data: Blob::from(vec![255u8, 255, 255, 255]),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 1,
+            height: 1,
+        };
+        let v = View::<()>::new(Style::default()).mask_image(Image::new(data));
+        assert!(v.mask_image.is_some(), "mask_image queda seteada");
+        assert!(!v.clip, "mask_image NO activa clip (es ortogonal al recorte)");
+        // Sin `mask_placement`, el paint estira al border-box (Fase 7.1226).
+        assert!(v.mask_placement.is_none());
+        // Default: sin máscara.
+        assert!(View::<()>::new(Style::default()).mask_image.is_none());
+    }
+
+    #[test]
+    fn mask_placement_setea_encaje() {
+        // `.mask_placement(...)` guarda el encaje (size/position/repeat/mode) que
+        // el paint resuelve contra el rect, igual que background-image. Fase
+        // 7.1227 (encaje), 7.1228 (mode).
+        let p = MaskPlacement {
+            size: MaskSize::Contain,
+            pos_x: MaskLen::Pct(50.0),
+            pos_y: MaskLen::Px(8.0),
+            repeat_x: true,
+            repeat_y: false,
+            mode: MaskMode::Alpha,
+            clip_inset: Some([2.0, 2.0, 2.0, 2.0]),
+            origin_inset: None,
+        };
+        let v = View::<()>::new(Style::default()).mask_placement(p);
+        assert_eq!(v.mask_placement, Some(p));
+        // No activa clip ni implica máscara por sí solo (es sólo el encaje).
+        assert!(!v.clip);
+        assert!(v.mask_image.is_none());
+        // Default: sin encaje (estira al border-box, modo luminancia).
+        assert!(View::<()>::new(Style::default()).mask_placement.is_none());
+        // El modo default del compositor es luminancia (el camino estirado de
+        // la Fase 7.1226 sin placement). Fase 7.1228.
+        assert_eq!(MaskMode::default(), MaskMode::Luminance);
+    }
+
+    #[test]
+    fn mask_extra_setea_capas_adicionales() {
+        // `.mask_extra(...)` guarda las capas extra `(imagen, operador)` que el
+        // paint combina con la capa 0 según el operador. Fase 7.1231.
+        use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+        let mk = || {
+            Image::new(ImageData {
+                data: Blob::from(vec![255u8, 255, 255, 255]),
+                format: ImageFormat::Rgba8,
+                alpha_type: ImageAlphaType::Alpha,
+                width: 1,
+                height: 1,
+            })
+        };
+        let v = View::<()>::new(Style::default())
+            .mask_extra(vec![(mk(), MaskCompose::Intersect), (mk(), MaskCompose::Add)]);
+        assert_eq!(v.mask_extra.len(), 2);
+        assert_eq!(v.mask_extra[0].1, MaskCompose::Intersect);
+        assert_eq!(v.mask_extra[1].1, MaskCompose::Add);
+        // Default: sin capas extra; el operador default es `add`.
+        assert!(View::<()>::new(Style::default()).mask_extra.is_empty());
+        assert_eq!(MaskCompose::default(), MaskCompose::Add);
+    }
+
+    #[test]
+    fn aria_label_sobre_role_preserva_role() {
+        let v = View::<()>::new(Style::default())
+            .role(Role::Button)
+            .aria_label("Guardar");
+        let s = v.semantics.expect("semantics");
+        assert_eq!(s.role, Some(Role::Button));
+        assert_eq!(s.label.as_deref(), Some("Guardar"));
+    }
+
+    #[test]
+    fn role_sobre_aria_label_preserva_label() {
+        // Orden invertido: el segundo setter no debe pisar lo del primero.
+        let v = View::<()>::new(Style::default())
+            .aria_label("Buscar")
+            .role(Role::TextInput);
+        let s = v.semantics.expect("semantics");
+        assert_eq!(s.role, Some(Role::TextInput));
+        assert_eq!(s.label.as_deref(), Some("Buscar"));
+    }
+
+    #[test]
+    fn flags_independientes_no_se_pisan() {
+        let v = View::<()>::new(Style::default())
+            .role(Role::Checkbox)
+            .aria_checked(true)
+            .aria_required(true);
+        let s = v.semantics.expect("semantics");
+        assert_eq!(s.flags.checked, Some(true));
+        assert_eq!(s.flags.required, Some(true));
+        assert!(s.flags.disabled.is_none(), "no se setea lo que no se pidió");
+    }
+
+    #[test]
+    fn semantics_spec_completo_reemplaza_lo_acumulado() {
+        // `.semantics(spec)` es el setter "todo o nada"; debe sobrescribir.
+        let v = View::<()>::new(Style::default())
+            .role(Role::Button)
+            .aria_label("Vieja")
+            .semantics(SemanticsSpec::role(Role::Link).with_label("Nueva"));
+        let s = v.semantics.expect("semantics");
+        assert_eq!(s.role, Some(Role::Link));
+        assert_eq!(s.label.as_deref(), Some("Nueva"));
+    }
+
+    #[test]
+    fn filter_setea_campo_sin_tocar_clip() {
+        // `.filter([Blur])` guarda la lista de filtros del propio subárbol. Es
+        // ORTOGONAL al recorte (NO activa clip) y al backdrop_blur. Fase 7.1232.
+        let v = View::<()>::new(Style::default()).filter(vec![FilterOp::Blur(4.0)]);
+        assert_eq!(v.filter, vec![FilterOp::Blur(4.0)]);
+        assert!(!v.clip, "filter NO activa clip (es ortogonal al recorte)");
+        assert!(v.backdrop_blur.is_none(), "filter NO es backdrop_blur");
+        // Default: sin filtro.
+        assert!(View::<()>::new(Style::default()).filter.is_empty());
+    }
+
+    #[test]
+    fn blend_setea_campo_sin_tocar_clip_ni_filter() {
+        // `.blend(bm)` guarda el modo de mezcla del nodo entero (CSS
+        // `mix-blend-mode`). Es ORTOGONAL a clip/filter/alpha. Fase 7.1237.
+        let bm = BlendMode::from(vello::peniko::Mix::Multiply);
+        let v = View::<()>::new(Style::default()).blend(bm);
+        assert_eq!(v.blend, Some(bm));
+        assert!(!v.clip, "blend NO activa clip (es ortogonal al recorte)");
+        assert!(v.filter.is_empty(), "blend NO es filter");
+        assert!(v.alpha.is_none(), "blend NO es alpha");
+        // Default: sin blend (source-over).
+        assert!(View::<()>::new(Style::default()).blend.is_none());
+        // El campo sobrevive el mount (llega al MountedNode).
+        use llimphi_layout::LayoutTree;
+        let mut layout = LayoutTree::new();
+        let mounted = mount(&mut layout, View::<()>::new(Style::default()).blend(bm));
+        assert_eq!(mounted.nodes[0].blend, Some(bm), "blend llega al MountedNode");
+    }
+
+    #[test]
+    fn collect_filters_aplana_ops_con_rect_del_nodo() {
+        // `collect_filters` recolecta cada FilterOp con el rect computado del
+        // nodo, en orden de lista. Verificamos el camino mount → compute →
+        // collect sin GPU (la aplicación del blur en sí es GPU). Fase 7.1232.
+        use llimphi_layout::taffy::prelude::{length, Size};
+        use llimphi_layout::LayoutTree;
+        let root = View::<()>::new(Style {
+            size: Size { width: length(100.0), height: length(40.0) },
+            ..Default::default()
+        })
+        .filter(vec![FilterOp::Blur(5.0)]);
+        let mut layout = LayoutTree::new();
+        let mounted = mount(&mut layout, root);
+        let computed = layout
+            .compute(mounted.root, (200.0, 200.0))
+            .expect("layout");
+        let passes = collect_filters(&mounted, &computed);
+        assert_eq!(passes.len(), 1, "un FilterOp → un FilterPass");
+        assert!(matches!(passes[0].op, FilterOp::Blur(s) if (s - 5.0).abs() < 1e-3));
+        assert_eq!(passes[0].rect.2, 100.0, "ancho del rect del nodo");
+        assert_eq!(passes[0].rect.3, 40.0, "alto del rect del nodo");
+    }
+
+    #[test]
+    fn collect_filters_vacio_sin_filtros() {
+        // Sin `.filter(...)` en ningún nodo, la recolección es vacía (coste cero
+        // en el runtime). Fase 7.1232.
+        use llimphi_layout::LayoutTree;
+        let root = View::<()>::new(Style::default());
+        let mut layout = LayoutTree::new();
+        let mounted = mount(&mut layout, root);
+        let computed = layout.compute(mounted.root, (50.0, 50.0)).expect("layout");
+        assert!(collect_filters(&mounted, &computed).is_empty());
+    }
+
+    #[test]
+    fn no_wrap_setea_campo_del_texto_fase_7_1253() {
+        // `.no_wrap()` marca el TextSpec para shapear en una sola línea (CSS
+        // `white-space: nowrap`). Ortogonal al resto del estilo de texto;
+        // default false (wrap). No-op si el nodo no tiene texto.
+        let v = View::<()>::new(Style::default())
+            .text("hola mundo", 14.0, Color::BLACK)
+            .no_wrap();
+        let t = v.text.as_ref().expect("text");
+        assert!(t.no_wrap, "no_wrap=true tras el builder");
+        // Default: el texto envuelve (no_wrap=false).
+        let def = View::<()>::new(Style::default()).text("x", 14.0, Color::BLACK);
+        assert!(!def.text.as_ref().unwrap().no_wrap, "default es wrap");
+        // No-op sin texto: no panickea ni inventa un TextSpec.
+        let sin = View::<()>::new(Style::default()).no_wrap();
+        assert!(sin.text.is_none(), "no_wrap sin texto no crea TextSpec");
+    }
+
+    #[test]
+    fn overflow_wrap_setea_campo_del_texto_fase_7_1254() {
+        // `.overflow_wrap()` marca el TextSpec para partir la palabra larga (CSS
+        // `overflow-wrap: break-word`). Ortogonal al resto; default false (la
+        // palabra desborda). No-op si el nodo no tiene texto.
+        let v = View::<()>::new(Style::default())
+            .text("palabralarga", 14.0, Color::BLACK)
+            .overflow_wrap();
+        let t = v.text.as_ref().expect("text");
+        assert!(t.overflow_wrap, "overflow_wrap=true tras el builder");
+        // Default: la palabra larga desborda (overflow_wrap=false).
+        let def = View::<()>::new(Style::default()).text("x", 14.0, Color::BLACK);
+        assert!(
+            !def.text.as_ref().unwrap().overflow_wrap,
+            "default es desbordar"
+        );
+        // No-op sin texto: no panickea ni inventa un TextSpec.
+        let sin = View::<()>::new(Style::default()).overflow_wrap();
+        assert!(sin.text.is_none(), "overflow_wrap sin texto no crea TextSpec");
     }
 }

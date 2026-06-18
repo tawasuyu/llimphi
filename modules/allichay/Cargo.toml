@@ -1,0 +1,30 @@
+[package]
+name = "llimphi-module-allichay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+description = "llimphi-module-allichay — el renderizador único de la config declarativa. Pinta un `allichay::Schema` con el rail de dientes (secciones) y controles escalares (toggle/slider/dropdown/color/texto), y emite los cambios como (FieldPath, FieldValue). State + Msg + apply_key/view, el patrón de módulo Llimphi. Reutilizable por el panel central y por cada app."
+
+[dependencies]
+allichay = { workspace = true }
+llimphi-ui = { workspace = true }
+llimphi-theme = { workspace = true }
+llimphi-widget-dock-rail = { workspace = true }
+llimphi-widget-switch = { workspace = true }
+llimphi-widget-slider = { workspace = true }
+llimphi-widget-segmented = { workspace = true }
+llimphi-widget-scroll = { workspace = true }
+llimphi-widget-text-input = { workspace = true }
+llimphi-widget-table = { workspace = true }
+llimphi-widget-color-picker = { workspace = true }
+llimphi-widget-modal = { workspace = true }
+
+[dev-dependencies]
+# Volcado headless del view a PNG (llvmpipe) para verlo sin levantar ventana,
+# usando el schema real de mirada como muestra.
+mirada-brain = { path = "../../../mirada/mirada-brain" }
+pata-core = { path = "../../../pata/pata-core" }
+png = { workspace = true }
+pollster = { workspace = true }

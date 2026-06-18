@@ -19,16 +19,31 @@ use std::sync::Arc;
 
 use llimphi_layout::taffy::NodeId;
 use llimphi_layout::{ComputedLayout, LayoutTree, Style};
-use vello::kurbo::{Affine, Point, Rect as KurboRect, RoundedRect};
-use vello::peniko::{Color, Fill, Image, Mix};
+use vello::kurbo::{
+    Affine, Ellipse, Point, Rect as KurboRect, RoundedRect, RoundedRectRadii, Stroke,
+};
+use vello::peniko::{BlendMode, Color, Fill, Gradient, ImageBrush as Image, Mix};
 
+mod anim;
+mod hero;
+mod layout_builder;
 mod render;
+mod ripple;
+mod semantics;
 mod view;
+pub use anim::{
+    ease_out_cubic, reconcile_size_anim, Anim, AnimRegistry, SizeAnim, SizeAnimRegistry,
+};
+pub use hero::{Hero, HeroRegistry};
+pub use layout_builder::{collect_builder_constraints, expand_layout_builders, has_layout_builder};
 pub use render::*;
+pub use ripple::{Ripple, RippleRegistry};
+pub use semantics::{Role, SemanticsFlags, SemanticsSpec};
 
 /// Texto a pintar dentro de un nodo. Alineación por defecto `Center`
 /// (horizontal y vertical), apta para labels de botón. Para layouts tipo
 /// editor o párrafo, usar `.text_aligned(...)` con `Alignment::Start`.
+#[derive(Clone)]
 pub struct TextSpec {
     pub content: String,
     pub size_px: f32,
@@ -36,6 +51,19 @@ pub struct TextSpec {
     pub alignment: llimphi_text::Alignment,
     /// `true` = forzar variante italic en la fuente activa. Default false.
     pub italic: bool,
+    /// Peso de fuente CSS: 400 = normal, 700 = bold. parley elige la
+    /// variante más cercana de la familia activa (o la sintetiza). Se usa
+    /// tanto al **medir** como al **pintar**, así medida y dibujo coinciden.
+    /// Default 400.
+    pub weight: f32,
+    /// Límite de líneas (CSS `-webkit-line-clamp` / Flutter `maxLines`). `None`
+    /// = sin límite (envuelve libre). Cuando el texto excede, se trunca: con
+    /// [`Self::ellipsis`] la última línea termina en `…`, sin él se corta seco.
+    /// Afecta medida (taffy reserva el alto de N líneas) y pintado.
+    pub max_lines: Option<usize>,
+    /// Si `true` y `max_lines` trunca, la última línea visible termina en `…`.
+    /// Sin efecto si `max_lines` es `None`. Default false.
+    pub ellipsis: bool,
     /// CSS-style font-family string (acepta lista con fallbacks). `None`
     /// = la fuente default de parley.
     pub font_family: Option<String>,
@@ -51,6 +79,46 @@ pub struct TextSpec {
     /// `Typesetter::layout_runs` + `draw_layout_runs`, y `color` actúa como
     /// color por defecto de lo no cubierto por ningún run.
     pub runs: Option<Vec<(usize, usize, Color)>>,
+    /// Subrayado activo. El runtime pinta la línea bajo la línea base usando
+    /// las métricas (`underline_offset`, `underline_size`) que parley deriva
+    /// de la fuente — así un texto a 12pt y otro a 24pt tienen un subrayado
+    /// proporcional sin que el caller calcule nada.
+    pub underline: bool,
+    /// Tachado activo. Mismo régimen que [`Self::underline`] pero sobre el
+    /// strikethrough metric — útil para listas to-do, items removidos en un
+    /// diff, precios viejos.
+    pub strikethrough: bool,
+    /// **Spans inline mixtos** (RichText): overrides de
+    /// tamaño/peso/italic/familia/color/underline/strikethrough por rango
+    /// de bytes (parley convention). `None` = texto uniforme (camino
+    /// `layout_clamped`); `Some([])` se trata como `None`. Cuando hay
+    /// spans, el runtime usa `Typesetter::layout_spans` (Layout<RunBrush>
+    /// con `max_width`/wrap) + `draw_layout_runs_xf`; los campos del
+    /// `TextSpec` son **defaults a nivel bloque** que cada span puede
+    /// sobreescribir. Tier 2 final de PARIDAD-FLUTTER (Bloque 13).
+    pub spans: Option<Vec<llimphi_text::TextSpan>>,
+    /// `letter-spacing`: px **extra** entre letras (CSS). 0 = normal. Afecta
+    /// shaping y medida. Sólo el camino uniforme (`layout_clamped`); el camino
+    /// de spans (RichText) lo ignora en v1.
+    pub letter_spacing: f32,
+    /// `word-spacing`: px **extra** entre palabras (CSS). 0 = normal. Mismo
+    /// régimen que [`Self::letter_spacing`].
+    pub word_spacing: f32,
+    /// `white-space: nowrap`/`pre`: si `true`, el texto **no envuelve** —
+    /// se shapea en una sola línea (`break_all_lines(None)`) sin importar el
+    /// ancho disponible, y desborda la caja (lo recorta `overflow: hidden` si
+    /// lo hay). Afecta medida (taffy reserva el ancho de la línea completa) y
+    /// pintado. Default false (wrap libre, comportamiento previo). Sólo el
+    /// camino uniforme (`layout_clamped`); el de spans (RichText) lo ignora en
+    /// v1, igual que el clamp.
+    pub no_wrap: bool,
+    /// `overflow-wrap: break-word`/`anywhere` (o `word-break: break-all`): si
+    /// `true`, una palabra más ancha que la caja se **parte** para que entre,
+    /// en vez de desbordar. Afecta medida (taffy puede reservar menos ancho) y
+    /// pintado. Default false (la palabra larga desborda — comportamiento
+    /// previo). Sólo el camino uniforme (`layout_clamped`); el de spans
+    /// (RichText) lo ignora en v1, igual que `no_wrap`/clamp.
+    pub overflow_wrap: bool,
 }
 
 /// Fase de un drag activo. `Move` se emite por cada `CursorMoved` con el
@@ -99,6 +167,78 @@ pub type ScrollFn<Msg> = Arc<dyn Fn(f32, f32) -> Option<Msg> + Send + Sync>;
 /// qué entidad (Concepto, lemming, etc.) bajo el cursor agarró el drag.
 /// Recibe `(phase, dx, dy, initial_lx, initial_ly)`.
 pub type DragAtFn<Msg> = Arc<dyn Fn(DragPhase, f32, f32, f32, f32) -> Option<Msg> + Send + Sync>;
+
+/// Variante de [`DragFn`] que recibe la **velocidad del drag al soltarlo**
+/// (`vx`, `vy` en px/s). El runtime mide el desplazamiento sobre los
+/// últimos ~100 ms de movimiento (ventana móvil de hasta ocho samples)
+/// y la pasa en `DragPhase::End`. Durante `DragPhase::Move` ambas son
+/// `0.0` — la velocidad sólo es significativa al final. Permite
+/// **fling-desde-drag**: el caller arranca un ticker con esa velocidad y
+/// la decae con [`fling_step`](https://docs.rs/) hasta asentar. Reemplaza
+/// la estimación manual que antes tenía que llevar el caller con
+/// `Instant::now()` por su cuenta.
+pub type DragVelocityFn<Msg> =
+    Arc<dyn Fn(DragPhase, f32, f32, f32, f32) -> Option<Msg> + Send + Sync>;
+
+/// Fase de un **gesto continuo** (pinch-to-zoom de momento; rotación a futuro).
+/// El runtime emite `Begin` al iniciar el gesto, `Update` por cada cambio
+/// incremental y `End` al terminar. El camino de Ctrl+rueda (universal, sin
+/// trackpad) emite un único `Update` por click de rueda — no hay un "inicio"
+/// ni "fin" naturales, así que el handler debe tolerar `Update`s sueltos sin
+/// `Begin` previo (es lo común en desktop). El camino de trackpad
+/// (`PinchGesture`, sólo macOS/iOS) sí entrega `Begin`/`Update*`/`End`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GesturePhase {
+    Begin,
+    Update,
+    End,
+}
+
+/// Handler de gesto de **escala** (pinch-to-zoom). Recibe `(phase, factor,
+/// focal_x, focal_y)`:
+/// - `factor`: cambio de escala **incremental y multiplicativo** desde el
+///   evento anterior — `1.0` = sin cambio, `>1.0` agranda (zoom in), `<1.0`
+///   achica (zoom out). El caller acumula con `mi_zoom *= factor` y, si
+///   quiere, lo clampa a su rango. En `Begin`/`End` el factor es `1.0`.
+/// - `focal_x`/`focal_y`: punto focal del gesto **relativo a la esquina
+///   superior-izquierda del rect del nodo** (mismo espacio que los handlers
+///   `*_at`). Es el punto que debe quedar fijo bajo el cursor al hacer zoom —
+///   el caller lo usa para zoomear "hacia el cursor" en vez de hacia el
+///   centro. En Ctrl+rueda es la posición del cursor; en trackpad, idem.
+///
+/// Devolver `Some(Msg)` dispara una transición; `None` ignora el evento. El
+/// runtime lo resuelve con [`hit_test_scale`]: el nodo más al frente bajo el
+/// cursor que declare un `on_scale` consume el gesto. Es la base del zoom de
+/// los canvases (pineal/cosmos/nakui).
+pub type ScaleFn<Msg> = Arc<dyn Fn(GesturePhase, f32, f32, f32) -> Option<Msg> + Send + Sync>;
+
+/// Handler de gesto de **rotación** (trackpad, sólo macOS — winit no emite
+/// `RotationGesture` en Wayland/Windows). Análogo a [`ScaleFn`] pero el
+/// segundo argumento es el **delta de ángulo incremental en radianes**
+/// (positivo = horario) en lugar del factor de escala; `(focal_x, focal_y)`
+/// es el punto bajo el cursor relativo al rect del nodo. El nodo más al
+/// frente bajo el cursor que declare un `on_rotate` consume el gesto. Base
+/// para rotar canvases/imágenes con dos dedos. Ver [`View::on_rotate`].
+pub type RotateFn<Msg> = Arc<dyn Fn(GesturePhase, f32, f32, f32) -> Option<Msg> + Send + Sync>;
+
+/// Restricciones de tamaño que un [`LayoutBuilderFn`] recibe: las dimensiones
+/// del slot que el layout le asignó al nodo (en px físicos). Análogo a las
+/// `BoxConstraints` de Flutter `LayoutBuilder` / al `MediaQuery` pero **local
+/// al nodo** (no a la ventana). El builder construye su subárbol en función de
+/// esto — p. ej. una columna si `max_width < 600`, dos si es ancho.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Constraints {
+    pub max_width: f32,
+    pub max_height: f32,
+}
+
+/// Constructor **diferido** de subárbol sensible al tamaño (Flutter
+/// `LayoutBuilder`). El runtime resuelve el tamaño del slot del nodo en una
+/// primera pasada de layout y luego invoca esta closure con esas
+/// [`Constraints`] para producir los hijos — así "construir distinto según el
+/// espacio disponible" deja de exigir conocer el tamaño al armar el `View`. Ver
+/// [`View::layout_builder`].
+pub type LayoutBuilderFn<Msg> = Arc<dyn Fn(Constraints) -> View<Msg> + Send + Sync>;
 
 /// Rect absoluto del nodo (en coordenadas físicas del frame). Lo
 /// recibe el callback de [`View::paint_with`] para que pueda
@@ -163,6 +303,133 @@ pub type GpuPaintFn = Arc<
         + Sync,
 >;
 
+/// Callback de pintura vello "over": idéntico en firma a [`PaintFn`]
+/// `(&mut Scene, &mut Typesetter, PaintRect)`, pero el runtime lo invoca
+/// en una pasada vello FINAL, **después** de todos los `gpu_painter` del
+/// frame. Sus primitivas se rasterizan sobre fondo transparente y se
+/// componen con alpha encima de la intermedia (que ya tiene
+/// vello-base + GPU directo). Resuelve el z-order inverso al de
+/// [`GpuPaintFn`]: permite pintar texto/sprites AA por vello **encima**
+/// de celdas instanciadas por GPU (dominium grid, futuro motor voxel).
+///
+/// Orden total del frame: `[vello base] → [gpu_painter] → [over_painter]
+/// → [overlay/menús]`. Los menús (`view_overlay`) siguen quedando por
+/// encima del over-layer. Ver [`View::paint_over`]. Es un alias de
+/// [`PaintFn`]; existe sólo para documentar la semántica temporal.
+pub type OverPaintFn = PaintFn;
+
+/// Sombra proyectada detrás del rect del nodo (drop shadow), rasterizada
+/// con el `draw_blurred_rounded_rect` nativo de vello. Se pinta **antes**
+/// del relleno, así el fill (si es opaco) tapa la parte solapada y la
+/// sombra sólo asoma por el desenfoque + el offset. El radio sigue al del
+/// nodo (más `spread`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shadow {
+    pub color: Color,
+    /// Desviación estándar del gaussiano (qué tan difusa). En px.
+    pub blur: f64,
+    /// Desplazamiento de la sombra respecto del nodo.
+    pub dx: f64,
+    pub dy: f64,
+    /// Cuánto crece (px) el rect de la sombra respecto del nodo.
+    pub spread: f64,
+}
+
+impl Shadow {
+    /// Sombra con color + blur explícitos, sin offset ni spread.
+    pub fn new(color: Color, blur: f64) -> Self {
+        Self { color, blur, dx: 0.0, dy: 0.0, spread: 0.0 }
+    }
+
+    /// Elevación suave y tasteful: negro translúcido, leve caída hacia
+    /// abajo. El default razonable para cards/menús/modales.
+    pub fn soft(alpha: u8, blur: f64) -> Self {
+        Self {
+            color: Color::from_rgba8(0, 0, 0, alpha),
+            blur,
+            dx: 0.0,
+            dy: blur * 0.4,
+            spread: 0.0,
+        }
+    }
+
+    pub fn offset(mut self, dx: f64, dy: f64) -> Self {
+        self.dx = dx;
+        self.dy = dy;
+        self
+    }
+
+    pub fn spread(mut self, spread: f64) -> Self {
+        self.spread = spread;
+        self
+    }
+}
+
+/// Borde (stroke) pintado sobre el contorno redondeado del nodo, **inset**
+/// hacia adentro media línea para que el grosor quede dentro del rect
+/// (convención CSS `box-sizing: border-box`). Se pinta después del relleno.
+#[derive(Clone, Copy, Debug)]
+pub struct Border {
+    pub width: f64,
+    pub color: Color,
+}
+
+impl Border {
+    pub fn new(width: f64, color: Color) -> Self {
+        Self { width, color }
+    }
+}
+
+/// Una operación de filtro CSS (`filter: blur()/brightness()/…`) aplicada al
+/// **propio subárbol** del nodo. A diferencia de `backdrop_blur` (que afecta lo
+/// pintado *debajo*), un `FilterOp` modifica el contenido del nodo. El runtime
+/// los aplica como post-pasada GPU sobre la intermediate, restringidos al rect
+/// del nodo, en el orden de la lista. La lista crece por fase (CSS Filter
+/// Effects 1): `Blur` (7.1232) + `ColorMatrix` (7.1233). Fase 7.1232.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FilterOp {
+    /// `filter: blur(<px>)`. `px` es la desviación estándar del Gauss (igual
+    /// convención que CSS). Se aplica con `BlurCompositor`, el mismo camino que
+    /// `backdrop_blur`.
+    Blur(f32),
+    /// Filtros de color (`brightness`/`contrast`/`grayscale`/`sepia`/`saturate`/
+    /// `invert`/`hue-rotate`/`opacity`) colapsados a una **matriz de color 4×5**
+    /// row-major: por fila `[c0, c1, c2, c3, bias]`, salida R/G/B/A
+    /// (`out = M·rgba + bias`). Se aplica con `ColorFilterCompositor`. Fase
+    /// 7.1233.
+    ColorMatrix([f32; 20]),
+    /// `filter: drop-shadow(<ox> <oy> [blur] [color])`. Se pinta como una sombra
+    /// Gaussiana del **border-box** detrás del nodo (con `draw_blurred_rounded_rect`,
+    /// igual primitiva que `Shadow`/box-shadow). v1: sombra del rect, no de la
+    /// silueta alpha del subárbol. A diferencia de `Blur`/`ColorMatrix`, NO es
+    /// post-pasada GPU — se pinta en vello antes del relleno, por lo que
+    /// `collect_filters` la ignora. Fase 7.1234.
+    DropShadow(Shadow),
+}
+
+/// Punto de pivote de `transform` (CSS `transform-origin`). Cada eje se resuelve
+/// contra el rect del nodo como `px + frac · tamaño`: `px` (ya escalado por zoom
+/// por el caller) cubre offsets absolutos y `frac` los porcentuales (`0.5` = 50%
+/// del ancho/alto). El default CSS `50% 50%` (centro) es
+/// `{ px: (0.0, 0.0), frac: (0.5, 0.5) }`; un nodo con `transform_origin: None`
+/// usa ese centro. Modela `px + %` por eje igual que `transform_rel` modela el
+/// `translate(<%>)` — necesario porque el % depende del layout, desconocido hasta
+/// `paint`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TransformPivot {
+    /// Offset absoluto en px (ya × zoom) por eje `(x, y)`.
+    pub px: (f64, f64),
+    /// Fracción del tamaño del rect por eje `(x, y)` (`0.5` = 50%).
+    pub frac: (f64, f64),
+}
+
+impl Default for TransformPivot {
+    fn default() -> Self {
+        // CSS `transform-origin: 50% 50%` — centro del rect.
+        Self { px: (0.0, 0.0), frac: (0.5, 0.5) }
+    }
+}
+
 /// Nodo de la vista declarativa. Estilo de layout (taffy) + relleno opcional
 /// (vello) + texto opcional (skrifa+vello) + Msg al click opcional + hijos.
 pub struct View<Msg> {
@@ -172,12 +439,53 @@ pub struct View<Msg> {
     /// = no se reacciona al hover.
     pub hover_fill: Option<Color>,
     pub radius: f64,
+    /// Radio **por esquina** (top-left, top-right, bottom-right, bottom-left),
+    /// que sobreescribe a `radius` cuando está presente. Permite cards con
+    /// sólo las esquinas de arriba redondeadas, pestañas, bocadillos de chat,
+    /// etc. (CSS `border-radius` con 4 valores). `None` = usar el `radius`
+    /// uniforme. Ver [`View::radius_corners`]. La **sombra** sigue usando un
+    /// radio escalar (el blur nativo de vello no acepta radios por esquina);
+    /// el **borde** sí respeta las cuatro esquinas.
+    pub corner_radii: Option<RoundedRectRadii>,
+    /// Sombra proyectada detrás del nodo (drop shadow). `None` = sin sombra
+    /// (la mayoría de nodos). Ver [`Shadow`].
+    pub shadow: Option<Shadow>,
+    /// Relleno con **gradiente**, autoreado en el cuadrado unidad `[0,1]²` y
+    /// mapeado al rect del nodo. Gana sobre `fill` como base; `hover_fill`
+    /// (un color) lo sigue overrideando en hover. Ver [`View::fill_gradient`].
+    pub fill_gradient: Option<Gradient>,
+    /// Borde (stroke) sobre el contorno redondeado. Ver [`Border`].
+    pub border: Option<Border>,
     pub text: Option<TextSpec>,
     /// Imagen a pintar dentro del rect del nodo. Se centra y escala
-    /// preservando aspect ratio (`min(rect.w/img.w, rect.h/img.h)`).
-    /// El alfa por píxel de la imagen y el `Image::alpha` global se
-    /// respetan; el `fill` (si lo hay) se pinta debajo como background.
+    /// según [`Self::image_fit`] (default `Contain` = preservar
+    /// aspect ratio cabiendo). El alfa por píxel de la imagen y el
+    /// `Image::alpha` global se respetan; el `fill` (si lo hay) se
+    /// pinta debajo como background. El clip al `node_rrect` respeta
+    /// `radius`/`corner_radii`, así avatares y cards con esquinas
+    /// redondeadas funcionan sin envolver en un padre `clip(true)`.
     pub image: Option<Image>,
+    /// Política de encaje de [`Self::image`] en el rect del nodo
+    /// (CSS `object-fit`). `None` = `Contain` (el default histórico).
+    /// Ver [`ImageFit`] y [`View::image_fit`].
+    pub image_fit: Option<ImageFit>,
+    /// **Máscara de luminancia** (CSS `mask-image`). Si está presente, el
+    /// runtime aísla el subárbol del nodo en una capa y luego lo enmascara con
+    /// la luminancia de esta imagen (`push_luminance_mask_layer` de vello):
+    /// blanco = visible, negro = oculto, gris = semitransparente. El encaje lo
+    /// fija [`Self::mask_placement`] (size/position/repeat); sin él la imagen se
+    /// estira al border-box. `None` = sin máscara. Ver [`View::mask_image`].
+    pub mask_image: Option<Image>,
+    /// Encaje de [`Self::mask_image`] (CSS `mask-size`/`-position`/`-repeat`).
+    /// `None` = estirar al border-box (Fase 7.1226). Sólo se consulta si
+    /// `mask_image` está presente. Ver [`MaskPlacement`] y
+    /// [`View::mask_placement`]. Fase 7.1227.
+    pub mask_placement: Option<MaskPlacement>,
+    /// Capas de máscara ADICIONALES (`mask-image: url(a), url(b), …`): cada una
+    /// es `(imagen, operador)`. Comparten [`Self::mask_placement`] con la capa 0
+    /// ([`Self::mask_image`]); se combinan con ella según el operador. Vacío =
+    /// una sola capa. Ver [`View::mask_extra`]. Fase 7.1231.
+    pub mask_extra: Vec<(Image, MaskCompose)>,
     /// Callback de pintura custom. Si está presente, el runtime lo
     /// invoca durante el paint del nodo con el `Scene` vivo + el rect
     /// absoluto. Pensado para "canvas elements" (dominium, pluma,
@@ -188,6 +496,13 @@ pub struct View<Msg> {
     /// frame; comparte tree y orden DFS con los demás. Ver
     /// [`GpuPaintFn`].
     pub gpu_painter: Option<GpuPaintFn>,
+    /// Pintor vello "over": closure que pinta DESPUÉS del pase GPU del
+    /// frame, sobre una escena vello que el runtime compone con alpha
+    /// encima de la intermedia. Sirve para sprites/texto AA encima de
+    /// celdas instanciadas por GPU. Ver [`View::paint_over`] y
+    /// [`OverPaintFn`]. Misma firma que [`PaintFn`] — sólo cambia
+    /// *cuándo* corre (post-GPU). `None` = sin over-layer (coste cero).
+    pub over_painter: Option<PaintFn>,
     pub on_click: Option<Msg>,
     /// Handler de click que recibe la posición **relativa al rect del
     /// nodo** (esquina superior-izquierda del nodo = `(0, 0)`). Útil
@@ -215,6 +530,12 @@ pub struct View<Msg> {
     /// Variante de drag que recibe la posición inicial del press relativa
     /// al rect del nodo. Gana sobre `drag` si ambos están presentes.
     pub drag_at: Option<DragAtFn<Msg>>,
+    /// Variante de drag que recibe la **velocidad** al soltar (`vx`, `vy`
+    /// en px/s) además del delta puntual. Gana sobre `drag`/`drag_at`
+    /// cuando está presente — un nodo elige un único sabor de drag. Habilita
+    /// fling-desde-drag (el caller arranca un ticker con esa velocidad y la
+    /// decae con [`fling_step`]).
+    pub drag_velocity: Option<DragVelocityFn<Msg>>,
     /// Payload `u64` que viaja con el drag iniciado sobre este nodo. Lo
     /// recibe el handler [`Self::on_drop`] del drop target. Sin payload,
     /// el drag funciona igual pero ningún drop target reacciona.
@@ -228,23 +549,104 @@ pub struct View<Msg> {
     /// `scene.push_layer` con `Mix::Clip`). El hit-test también respeta
     /// el recorte: clicks fuera del rect ignoran a los hijos.
     pub clip: bool,
+    /// Si `Some([top, right, bottom, left])`, recorta los descendientes a un
+    /// rect ENCOGIDO por esos insets (px) desde el rect del nodo — modela
+    /// `clip-path: inset(...)`. Implica clip aunque `clip == false`.
+    pub clip_inset: Option<[f32; 4]>,
+    /// Si `Some(spec)` (14 floats), recorta los descendientes a una ELIPSE —
+    /// modela `clip-path: circle()`/`ellipse()`. El centro (4) se resuelve
+    /// contra el rect: `cx = cx_px + cx_pct/100·w`, `cy = cy_px +
+    /// cy_pct/100·h`. Cada radio (5: `[px, pct_w, pct_h, pct_diag, side]`) con
+    /// `side == 0` suma `px + pct_w/100·w + pct_h/100·h + pct_diag/100·diag`
+    /// (`diag = √(w²+h²)/√2`); con `side != 0` se computa desde la distancia
+    /// del centro a los bordes (`1`/`2` = closest/farthest sobre los 4 lados;
+    /// `3`/`4` = ídem sobre el eje del radio). Layout: `[cx×2, cy×2, rx×5,
+    /// ry×5]`. Implica clip aunque `clip == false`. Si conviven `clip_inset` y
+    /// `clip_ellipse`, gana la elipse (una sola capa de recorte por nodo).
+    pub clip_ellipse: Option<[f32; 14]>,
+    /// Si `Some((evenodd, puntos))`, recorta los descendientes a un POLÍGONO —
+    /// modela `clip-path: polygon()`. Cada punto `[x_px, x_pct, y_px, y_pct]`
+    /// resuelve `(x_px + x_pct/100·w, y_px + y_pct/100·h)` contra el rect.
+    /// `evenodd` elige la regla de relleno. Implica clip aunque `clip ==
+    /// false`. Prioridad de recorte por nodo: polygon > elipse > inset > rect.
+    pub clip_polygon: Option<(bool, Vec<[f32; 4]>)>,
+    /// Si `Some((evenodd, d))`, recorta los descendientes a un PATH SVG —
+    /// modela `clip-path: path()`. `d` es el string SVG crudo (user units px,
+    /// relativos al origen del rect); el pintado lo parsea con
+    /// `BezPath::from_svg` y lo traslada al origen del nodo. Si el parseo
+    /// falla, no recorta. Implica clip aunque `clip == false`. Prioridad:
+    /// path > polygon > elipse > inset > rect.
+    pub clip_path_svg: Option<(bool, String)>,
+    /// Si `Some([t,r,b,l])`, el clip-path se resuelve contra una caja de
+    /// referencia (`<geometry-box>`) que es el rect del nodo ENCOGIDO por esos
+    /// insets px (padding-box = border; content-box = border+padding). El
+    /// pintado lo aplica ANTES de resolver la forma; sin forma, recorta a ese
+    /// rect. `None` = referencia = border-box (rect completo). Fase 7.1225.
+    pub clip_ref_inset: Option<[f32; 4]>,
     /// Msg a emitir cuando el cursor entra al rect del nodo (transición
     /// no-hover → hover). Útil para previews tipo "URL del link al
     /// pasar el mouse".
     pub on_pointer_enter: Option<Msg>,
     /// Msg a emitir cuando el cursor sale del rect del nodo.
     pub on_pointer_leave: Option<Msg>,
+    /// Handler de **movimiento del cursor** sobre el nodo: recibe `(local_x,
+    /// local_y, rect_w, rect_h)` en CADA `CursorMoved` mientras el cursor está
+    /// encima (no sólo en la transición de entrada, a diferencia de
+    /// [`Self::on_pointer_enter`]). Análogo posicional de hover, base de cosas
+    /// como el thumbnail que sigue al cursor sobre un timeline o un drawer que
+    /// reacciona a la posición. `None` no dispara update.
+    pub on_pointer_move_at: Option<ClickAtFn<Msg>>,
     /// Handler de rueda local. Si está presente y el cursor cae sobre este
     /// nodo, el runtime lo invoca antes del `App::on_wheel` global; un
     /// `Some(Msg)` consume el evento. Base de las áreas de scroll
     /// autocontenidas. Ver [`ScrollFn`].
     pub on_scroll: Option<ScrollFn<Msg>>,
+    /// Handler de gesto de **escala** (pinch-to-zoom). Si está presente y el
+    /// gesto cae sobre este nodo (Ctrl+rueda en desktop, pinch de trackpad en
+    /// macOS), el runtime lo invoca con el factor incremental + el punto focal
+    /// local. Base del zoom de canvases. Ver [`ScaleFn`] y [`View::on_scale`].
+    pub on_scale: Option<ScaleFn<Msg>>,
+    /// Handler de gesto de **rotación** (dos dedos en trackpad, macOS). Si
+    /// está presente y el gesto cae sobre este nodo, el runtime lo invoca con
+    /// el delta de ángulo incremental (radianes) + el punto focal local. Ver
+    /// [`RotateFn`] y [`View::on_rotate`].
+    pub on_rotate: Option<RotateFn<Msg>>,
+    /// Msg a emitir en **doble-tap** (dos presses izquierdos sobre este nodo
+    /// dentro de una ventana temporal corta y muy cerca). Es un evento
+    /// **aditivo**: si el nodo también tiene `on_click`, éste igual dispara en
+    /// cada press; el doble-tap llega además en el segundo. Para doble-tap
+    /// exclusivo, poné el handler en un nodo sin `on_click`. Ver
+    /// [`View::on_double_tap`].
+    pub on_double_tap: Option<Msg>,
+    /// Variante posicional de [`Self::on_double_tap`]: recibe la posición del
+    /// segundo tap relativa al rect del nodo (para zoom-to-point, etc.). Gana
+    /// sobre `on_double_tap` si ambos están.
+    pub on_double_tap_at: Option<ClickAtFn<Msg>>,
+    /// Msg a emitir en **long-press** (mantener el botón izquierdo sobre este
+    /// nodo ~500 ms sin moverse ni soltar). El runtime lo arbitra por tiempo:
+    /// si el cursor se aleja (pasó a drag/scroll) o se suelta antes, se
+    /// cancela. Evento **aditivo** (ver [`Self::on_double_tap`]); el caso
+    /// limpio es un nodo con drag-to-pan + long-press y sin `on_click` (un
+    /// canvas). Útil para menús contextuales táctiles / selección. Ver
+    /// [`View::on_long_press`].
+    pub on_long_press: Option<Msg>,
+    /// Variante posicional de [`Self::on_long_press`]: recibe la posición del
+    /// press relativa al rect del nodo (para abrir el menú en el punto). Gana
+    /// sobre `on_long_press` si ambos están.
+    pub on_long_press_at: Option<ClickAtFn<Msg>>,
     /// Marca este nodo como **enfocable** con el id opaco `u64`. El runtime
     /// mantiene el foco (uno por ventana) y lo mueve con Tab/Shift+Tab en
     /// orden de árbol (pre-orden) y al clickear un nodo enfocable; notifica
     /// a la app vía `App::on_focus` para que pinte el ring y rutee el
     /// teclado. El id lo elige el caller (índice de campo, hash, etc.).
     pub focusable: Option<u64>,
+    /// Marca este nodo de **texto** como seleccionable con el mouse fuera del
+    /// editor (arrastrar resalta, Ctrl/Cmd+C copia). El `u64` es una **key
+    /// estable** entre rebuilds del `View` (los `NodeId` de taffy cambian cada
+    /// frame, así que la selección retenida en el runtime se ancla a esta key,
+    /// igual que `animated`). Sólo tiene efecto en nodos con `text` uniforme
+    /// (no `runs`/`spans`). Ver [`View::selectable`].
+    pub text_select_key: Option<u64>,
     /// Opacidad multiplicada sobre TODO el subtree (este nodo + hijos),
     /// en `[0.0, 1.0]`. Se realiza con `scene.push_layer(Mix::Normal, a, …)`
     /// alrededor del rect del nodo: el subárbol se rasteriza en una capa
@@ -255,6 +657,35 @@ pub struct View<Msg> {
     /// composición tiene costo (allocate + blit), por lo que sólo
     /// poblar este slot cuando hace falta — no es un atributo gratis.
     pub alpha: Option<f32>,
+    /// Animación **implícita** de las props de paint (fill/radius): cuando el
+    /// valor cambia entre frames, el runtime interpola en vez de saltar. `None`
+    /// = sin animación (la abrumadora mayoría). La `key` debe ser estable entre
+    /// rebuilds. Ver [`Anim`] y [`View::animated`]. Lo consume el runtime vía
+    /// [`AnimRegistry::reconcile`] (DESPUÉS de layout, ANTES de paint).
+    pub anim: Option<Anim>,
+    /// **Animación implícita de tamaño** (Flutter `AnimatedSize` /
+    /// Compose `animateContentSize()`). `None` = sin animación. La key
+    /// debe ser estable entre rebuilds. A diferencia de [`Self::anim`]
+    /// (props de paint, reconcilia DESPUÉS de layout), el tamaño tiene
+    /// que estar firme **antes** del layout — siblings/hijos dependen
+    /// del rect del nodo. El runtime llama
+    /// [`reconcile_size_anim`] sobre el `View` tree **antes** de
+    /// `mount` y parcha `style.size` con el valor interpolado. Sólo se
+    /// activa si ambos `style.size.width` y `style.size.height` son
+    /// `Dimension::Length(_)`. Ver [`SizeAnim`] y [`View::animated_size`].
+    pub animated_size: Option<SizeAnim>,
+    /// **Semántica accesible** del nodo (rol, label, value, flags ARIA). El
+    /// runtime la traduce a un árbol AccessKit por frame para alimentar
+    /// lectores de pantalla (NVDA/VoiceOver/Orca/TalkBack). `None` = no
+    /// declarada (el lector lee el texto plano si lo hay, sin rol específico).
+    /// Ver [`SemanticsSpec`].
+    pub semantics: Option<SemanticsSpec>,
+    /// **Hero shared-element**: marca este nodo como una identidad estable
+    /// entre frames. Si la misma `key` aparece en otra posición en un frame
+    /// siguiente, el runtime interpola `transform` para "volar" del rect
+    /// anterior al actual durante la `duration` declarada. Ver
+    /// [`Hero`] y [`HeroRegistry`]. `None` = sin hero (la abrumadora mayoría).
+    pub hero: Option<Hero>,
     /// Transformación afín 2D aplicada a este nodo y todo su subtree
     /// **alrededor del centro de su propio rect** (convención CSS
     /// `transform-origin: 50% 50%`). El runtime resuelve el centro en
@@ -269,13 +700,262 @@ pub struct View<Msg> {
     /// el afín, y la posición local que reciben los handlers `*_at` se
     /// reporta en espacio de pantalla, no en el espacio local del nodo.
     pub transform: Option<Affine>,
+    /// Traslación RELATIVA al tamaño del propio nodo, en fracciones de su rect
+    /// computado: `(fx, fy)` ⇒ desplaza `(fx · w, fy · h)` px. Se resuelve en
+    /// `paint`/`hit_test` (única instancia donde se conoce el tamaño usado) y
+    /// se compone como el factor más externo del afín del nodo, ANTES del
+    /// centrado por `transform-origin`. Pensado para el `translate(<%>)` de CSS
+    /// (p. ej. el truco de centrado `translate(-50%, -50%)` ⇒ `(-0.5, -0.5)`),
+    /// que no es expresable como `Affine` fijo porque el % depende del layout.
+    /// `None` = sin traslación relativa (la abrumadora mayoría). Compone con
+    /// `transform` (afín fijo) si ambos están: `T_rel · transform`.
+    pub transform_rel: Option<(f64, f64)>,
+    /// Punto de pivote de `transform` (CSS `transform-origin`). `None` ⇒ el
+    /// default CSS `50% 50%` (centro del rect) — el caso mayoritario. Ver
+    /// [`TransformPivot`] y [`View::transform_origin`].
+    pub transform_origin: Option<TransformPivot>,
     /// Texto de **tooltip**: si está, el runtime/cliente puede mostrar un
     /// rótulo flotante cuando el cursor se posa sobre este nodo. Llimphi sólo
     /// transporta el dato hasta el [`MountedNode`]; *quién* lo pinta (un overlay
     /// del runtime, una surface popup del cliente) lo decide el consumidor. El
     /// hit-test de hover ya localiza el nodo bajo el cursor. `None` = sin tip.
     pub tooltip: Option<String>,
+    /// Forma del puntero del mouse mientras está sobre este nodo (o un
+    /// descendiente sin cursor propio — se hereda del ancestro más cercano que
+    /// lo declare). El runtime lo resuelve en el hit-test de hover y lo aplica a
+    /// la ventana. `None` = hereda (default flecha en la raíz). Ver [`Cursor`] y
+    /// [`View::cursor`]. Llimphi-native (sin winit); el runtime lo mapea.
+    pub cursor: Option<Cursor>,
+    /// Feedback de tap **ripple/InkWell**: al presionar este nodo, el runtime
+    /// emite una salpicadura Material (círculo que se expande desde el punto y
+    /// se desvanece, recortado al contorno del nodo). Es puro feedback visual,
+    /// aditivo al `on_click`; vive en el runtime ([`RippleRegistry`]), no en el
+    /// `Model`. `None` = sin ripple. Ver [`View::ripple`].
+    pub ripple: Option<Ripple>,
+    /// Constructor **diferido** sensible al tamaño (`LayoutBuilder`). Si está
+    /// presente, este nodo NO usa sus `children` estáticos: el runtime resuelve
+    /// su slot en una primera pasada de layout y luego invoca esta closure con
+    /// las [`Constraints`] resueltas para producir el subárbol. `None` = nodo
+    /// normal (la abrumadora mayoría). Ver [`View::layout_builder`].
+    pub layout_builder: Option<LayoutBuilderFn<Msg>>,
+    /// Backdrop blur sobre el contenido pintado **debajo** de este nodo.
+    /// Ver [`View::backdrop_blur`] / [`MountedNode::backdrop_blur`]. v1:
+    /// sólo se aplica a nodos top-level sin clip/alpha ancestral.
+    pub backdrop_blur: Option<f32>,
+    /// Filtros CSS (`filter: …`) sobre el propio subárbol del nodo. Vacío = sin
+    /// filtro. Ver [`View::filter`] / [`FilterOp`]. Fase 7.1232.
+    pub filter: Vec<FilterOp>,
+    /// **Modo de mezcla** del nodo entero contra su backdrop (CSS
+    /// `mix-blend-mode`). `Some(bm)` ⇒ el subárbol del nodo se rasteriza en una
+    /// capa aislada (`scene.push_layer(bm, …)` alrededor del rect) y se mezcla
+    /// con el modo `bm` contra todo lo pintado antes en el stacking context.
+    /// `None` = source-over normal (la abrumadora mayoría). Ver [`View::blend`].
+    /// Fase 7.1237.
+    pub blend: Option<BlendMode>,
     pub children: Vec<View<Msg>>,
+}
+
+impl<Msg: 'static> View<Msg> {
+    /// Transforma el `Msg` de **todo el árbol** vía `f`, devolviendo
+    /// `View<Msg2>`. Es la pieza que permite **embeber el `view` de un sub-app**
+    /// en un host (junto con [`crate::Handle::lift`] para sus efectos): el host
+    /// pinta `sub_view.map(Msg::Sub)` y los eventos del sub-árbol vuelven como
+    /// su propio `Msg`. Patrón estándar de anidado Elm. `f` se comparte (`Arc`)
+    /// entre todos los callbacks e hijos, así que debe ser `Send + Sync`.
+    pub fn map<Msg2, F>(self, f: F) -> View<Msg2>
+    where
+        Msg2: 'static,
+        F: Fn(Msg) -> Msg2 + Send + Sync + 'static,
+    {
+        self.map_shared(Arc::new(f))
+    }
+
+    fn map_shared<Msg2: 'static>(
+        self,
+        f: Arc<dyn Fn(Msg) -> Msg2 + Send + Sync>,
+    ) -> View<Msg2> {
+        let View {
+            style,
+            fill,
+            hover_fill,
+            radius,
+            corner_radii,
+            shadow,
+            fill_gradient,
+            border,
+            text,
+            image,
+            image_fit,
+            mask_image,
+            mask_placement,
+            mask_extra,
+            painter,
+            gpu_painter,
+            over_painter,
+            on_click,
+            on_click_at,
+            on_right_click,
+            on_right_click_at,
+            on_middle_click,
+            drag,
+            drag_at,
+            drag_velocity,
+            drag_payload,
+            on_drop,
+            drop_hover_fill,
+            clip,
+            clip_inset,
+            clip_ellipse,
+            clip_polygon,
+            clip_path_svg,
+            clip_ref_inset,
+            on_pointer_enter,
+            on_pointer_leave,
+            on_pointer_move_at,
+            on_scroll,
+            on_scale,
+            on_rotate,
+            on_double_tap,
+            on_double_tap_at,
+            on_long_press,
+            on_long_press_at,
+            focusable,
+            text_select_key,
+            alpha,
+            anim,
+            animated_size,
+            semantics,
+            hero,
+            transform,
+            transform_rel,
+            transform_origin,
+            tooltip,
+            cursor,
+            ripple,
+            layout_builder,
+            backdrop_blur,
+            filter,
+            blend,
+            children,
+        } = self;
+        // Wrappers: cada callback que produce `Option<Msg>` se reenvía y su
+        // resultado se eleva con `f`. `f` se clona por callback (todos comparten
+        // el mismo `Arc`).
+        View {
+            // — campos agnósticos al Msg: pasan tal cual —
+            style,
+            fill,
+            hover_fill,
+            radius,
+            corner_radii,
+            shadow,
+            fill_gradient,
+            border,
+            text,
+            image,
+            image_fit,
+            mask_image,
+            mask_placement,
+            mask_extra,
+            painter,
+            gpu_painter,
+            over_painter,
+            drag_payload,
+            drop_hover_fill,
+            clip,
+            clip_inset,
+            clip_ellipse,
+            clip_polygon,
+            clip_path_svg,
+            clip_ref_inset,
+            focusable,
+            text_select_key,
+            alpha,
+            anim,
+            animated_size,
+            semantics,
+            hero,
+            transform,
+            transform_rel,
+            transform_origin,
+            tooltip,
+            cursor,
+            ripple,
+            backdrop_blur,
+            filter,
+            blend,
+            // — Msg simples —
+            on_click: on_click.map(|m| f(m)),
+            on_right_click: on_right_click.map(|m| f(m)),
+            on_middle_click: on_middle_click.map(|m| f(m)),
+            on_pointer_enter: on_pointer_enter.map(|m| f(m)),
+            on_pointer_leave: on_pointer_leave.map(|m| f(m)),
+            on_double_tap: on_double_tap.map(|m| f(m)),
+            on_long_press: on_long_press.map(|m| f(m)),
+            // — ClickAtFn (lx, ly, w, h) —
+            on_click_at: on_click_at.map(|h| {
+                let f = f.clone();
+                Arc::new(move |a, b, c, d| h(a, b, c, d).map(|m| f(m))) as ClickAtFn<Msg2>
+            }),
+            on_right_click_at: on_right_click_at.map(|h| {
+                let f = f.clone();
+                Arc::new(move |a, b, c, d| h(a, b, c, d).map(|m| f(m))) as ClickAtFn<Msg2>
+            }),
+            on_pointer_move_at: on_pointer_move_at.map(|h| {
+                let f = f.clone();
+                Arc::new(move |a, b, c, d| h(a, b, c, d).map(|m| f(m))) as ClickAtFn<Msg2>
+            }),
+            on_double_tap_at: on_double_tap_at.map(|h| {
+                let f = f.clone();
+                Arc::new(move |a, b, c, d| h(a, b, c, d).map(|m| f(m))) as ClickAtFn<Msg2>
+            }),
+            on_long_press_at: on_long_press_at.map(|h| {
+                let f = f.clone();
+                Arc::new(move |a, b, c, d| h(a, b, c, d).map(|m| f(m))) as ClickAtFn<Msg2>
+            }),
+            // — drag / scroll / gestos —
+            drag: drag.map(|h| {
+                let f = f.clone();
+                Arc::new(move |p, dx, dy| h(p, dx, dy).map(|m| f(m))) as DragFn<Msg2>
+            }),
+            drag_at: drag_at.map(|h| {
+                let f = f.clone();
+                Arc::new(move |p, dx, dy, lx, ly| h(p, dx, dy, lx, ly).map(|m| f(m)))
+                    as DragAtFn<Msg2>
+            }),
+            drag_velocity: drag_velocity.map(|h| {
+                let f = f.clone();
+                Arc::new(move |p, dx, dy, vx, vy| h(p, dx, dy, vx, vy).map(|m| f(m)))
+                    as DragVelocityFn<Msg2>
+            }),
+            on_drop: on_drop.map(|h| {
+                let f = f.clone();
+                Arc::new(move |payload| h(payload).map(|m| f(m))) as DropFn<Msg2>
+            }),
+            on_scroll: on_scroll.map(|h| {
+                let f = f.clone();
+                Arc::new(move |dx, dy| h(dx, dy).map(|m| f(m))) as ScrollFn<Msg2>
+            }),
+            on_scale: on_scale.map(|h| {
+                let f = f.clone();
+                Arc::new(move |ph, s, cx, cy| h(ph, s, cx, cy).map(|m| f(m))) as ScaleFn<Msg2>
+            }),
+            on_rotate: on_rotate.map(|h| {
+                let f = f.clone();
+                Arc::new(move |ph, r, cx, cy| h(ph, r, cx, cy).map(|m| f(m))) as RotateFn<Msg2>
+            }),
+            // — layout_builder produce un View<Msg>: recursá el map —
+            layout_builder: layout_builder.map(|h| {
+                let f = f.clone();
+                Arc::new(move |c| h(c).map_shared(f.clone())) as LayoutBuilderFn<Msg2>
+            }),
+            // — hijos: recursión —
+            children: children
+                .into_iter()
+                .map(|c| c.map_shared(f.clone()))
+                .collect(),
+        }
+    }
 }
 
 /// Versión "instalada" del árbol: cada nodo tiene su NodeId de taffy, color
@@ -308,6 +988,204 @@ pub struct TextMeasure {
     pub italic: bool,
     pub font_family: Option<String>,
     pub line_height: f32,
+    pub weight: f32,
+    pub max_lines: Option<usize>,
+    pub ellipsis: bool,
+    /// Idem [`TextSpec::underline`]. Se replica en la medida porque parley
+    /// no cambia de ancho con decoración (no toca el shaping); pero la clave
+    /// del caché de shaping sí cambia, y queremos que medida y pintado
+    /// peguen la misma entrada del caché.
+    pub underline: bool,
+    /// Idem [`TextSpec::strikethrough`]. Mismo razonamiento que `underline`.
+    pub strikethrough: bool,
+    /// Idem [`TextSpec::spans`]. La medida usa el mismo
+    /// `Typesetter::layout_spans` que el pintado, así taffy reserva el alto
+    /// real considerando overrides de `size_px` por span (un `<h1>` inline
+    /// dentro de un párrafo agranda esa línea). `None`/`vacío` = medir con
+    /// `layout_clamped` (camino uniforme).
+    pub spans: Option<Vec<llimphi_text::TextSpan>>,
+    /// Idem [`TextSpec::letter_spacing`]. Entra en la medida porque cambia el
+    /// ancho del shaping (y la clave del caché).
+    pub letter_spacing: f32,
+    /// Idem [`TextSpec::word_spacing`]. Mismo razonamiento que `letter_spacing`.
+    pub word_spacing: f32,
+    /// Idem [`TextSpec::no_wrap`]. Entra en la medida porque cambia el ancho
+    /// reservado: con `no_wrap` el texto se mide en una sola línea (ancho
+    /// completo) en vez de envolver al `available`.
+    pub no_wrap: bool,
+    /// Idem [`TextSpec::overflow_wrap`]. Entra en la medida porque parte la
+    /// palabra larga: con el flag, el ancho mínimo del bloque deja de estar
+    /// fijado por el token más ancho.
+    pub overflow_wrap: bool,
+}
+
+/// Cómo encajar una imagen en el rect del nodo (CSS `object-fit` /
+/// Flutter `BoxFit`). El runtime calcula la escala y el origen
+/// correspondientes a esta política y siempre recorta al
+/// `node_rrect` del nodo, así el clip respeta `radius` /
+/// `corner_radii`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageFit {
+    /// Preservar aspect ratio, **caber** dentro del rect (escala =
+    /// `min(sx, sy)`). Deja banda en el eje menos restrictivo.
+    /// CSS `object-fit: contain` / Flutter `BoxFit.contain`. **Default
+    /// histórico** — lo que hacía `View::image()` antes del Bloque 12.
+    Contain,
+    /// Preservar aspect ratio, **cubrir** todo el rect (escala =
+    /// `max(sx, sy)`). Recorta el sobrante en el eje menos
+    /// restrictivo (el clip al `node_rrect` lo absorbe). CSS
+    /// `object-fit: cover` / Flutter `BoxFit.cover` — ideal para
+    /// avatares y hero images.
+    Cover,
+    /// Estirar la imagen para ocupar el rect, **sin** preservar
+    /// aspect ratio (`sx`/`sy` independientes). CSS `object-fit:
+    /// fill` / Flutter `BoxFit.fill`.
+    Fill,
+    /// **No** escalar la imagen — pintarla a su tamaño original,
+    /// centrada en el rect. Si la imagen excede el rect, el clip al
+    /// `node_rrect` la recorta. CSS `object-fit: none` / Flutter
+    /// `BoxFit.none`.
+    None,
+}
+
+/// Longitud de un eje de [`MaskSize`]/posición de máscara, **sin resolver** —
+/// el paint la resuelve contra el rect del nodo. Neutral respecto de CSS: el
+/// frontend (p. ej. puriy) traduce `mask-size`/`mask-position` a esto. Fase
+/// 7.1227.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MaskLen {
+    /// Tamaño intrínseco de la imagen (en size) / offset 0 (en position).
+    Auto,
+    /// Longitud absoluta en px.
+    Px(f32),
+    /// Porcentaje: en size, del lado correspondiente del rect; en position,
+    /// alineación CSS (el `p%` de la máscara cae sobre el `p%` del rect).
+    Pct(f32),
+}
+
+/// `mask-size` neutral (espejo de `BackgroundSize`). Ver [`MaskPlacement`].
+/// Fase 7.1227.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MaskSize {
+    /// Tamaño intrínseco de la imagen-máscara.
+    Auto,
+    /// Escalar preservando aspecto hasta **cubrir** el rect.
+    Cover,
+    /// Escalar preservando aspecto hasta **caber** en el rect.
+    Contain,
+    /// Tamaño explícito por eje (`Auto` en un eje = derivar por aspecto).
+    Explicit { x: MaskLen, y: MaskLen },
+}
+
+/// Modo de una máscara (CSS `mask-mode`). Decide qué canal del píxel-máscara
+/// modula el alpha del contenido. Fase 7.1228.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MaskMode {
+    /// La **luminancia** del píxel multiplica el alpha (negro = oculto, blanco =
+    /// visible). Lo usa CSS para máscaras SVG `<mask>`. Es el default del
+    /// compositor cuando no hay `MaskPlacement` (camino estirado, Fase 7.1226).
+    #[default]
+    Luminance,
+    /// El **canal alpha** del píxel modula el alpha (transparente = oculto). Es
+    /// el default CSS para imágenes raster (`mask-mode: match-source`). Se pinta
+    /// con `Compose::DestIn` en vez de la capa de luminancia.
+    Alpha,
+}
+
+/// Operador de combinación entre capas de máscara (CSS `mask-composite`). Mapea
+/// a un `Compose` Porter-Duff de vello cuando una capa extra se compone sobre
+/// las de abajo. Fase 7.1231.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MaskCompose {
+    /// La capa se **suma** sobre las de abajo (source-over). Default CSS.
+    #[default]
+    Add,
+    /// La capa **resta** (source-out: la fuente donde NO solapa el destino).
+    Subtract,
+    /// **Intersección** (source-in: la fuente donde solapa el destino).
+    Intersect,
+    /// **Exclusión** (xor: las regiones no solapadas de ambas).
+    Exclude,
+}
+
+/// Encaje y modo de una **máscara** (CSS `mask-size` + `mask-position` +
+/// `mask-repeat` + `mask-mode`), resuelto contra el rect del nodo en el paint,
+/// con la misma aritmética que `background-image`. En el [`MountedNode`] viaja
+/// como `Option`: `None` = estirar la máscara al border-box en modo luminancia
+/// (comportamiento de la Fase 7.1226). Fase 7.1227 (encaje), 7.1228 (modo).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MaskPlacement {
+    /// Tamaño del tile.
+    pub size: MaskSize,
+    /// Offset/alineación horizontal del primer tile.
+    pub pos_x: MaskLen,
+    /// Offset/alineación vertical del primer tile.
+    pub pos_y: MaskLen,
+    /// Tilear en X (`mask-repeat` cubre el eje horizontal).
+    pub repeat_x: bool,
+    /// Tilear en Y.
+    pub repeat_y: bool,
+    /// Canal que modula el alpha (luminancia vs alpha). Fase 7.1228.
+    pub mode: MaskMode,
+    /// Insets `[top, right, bottom, left]` px del border-box a la caja de
+    /// `mask-clip`: el efecto de la máscara se **recorta** a esa caja. `None` =
+    /// border-box. Fase 7.1230.
+    pub clip_inset: Option<[f32; 4]>,
+    /// Insets `[top, right, bottom, left]` px del border-box a la caja de
+    /// `mask-origin`: size/position/tiling se resuelven contra esa caja. `None`
+    /// = border-box. Fase 7.1230.
+    pub origin_inset: Option<[f32; 4]>,
+}
+
+impl Default for ImageFit {
+    fn default() -> Self {
+        ImageFit::Contain
+    }
+}
+
+/// Forma del puntero del mouse. Subconjunto práctico, llimphi-native (el
+/// compositor no depende de winit). El runtime (`llimphi-ui`) mapea 1:1 a
+/// `winit::window::CursorIcon`. Nombres alineados con CSS/winit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cursor {
+    /// Flecha por defecto.
+    Default,
+    /// Manito — sobre algo clickeable (links, botones).
+    Pointer,
+    /// I-beam — sobre texto editable/seleccionable.
+    Text,
+    /// Cruz — selección precisa (canvas, picker de color).
+    Crosshair,
+    /// Cuatro flechas — mover un objeto.
+    Move,
+    /// Mano abierta — agarrable (antes de arrastrar).
+    Grab,
+    /// Mano cerrada — arrastrando.
+    Grabbing,
+    /// Prohibido — drop no permitido / acción inválida.
+    NotAllowed,
+    /// Reloj/espera — operación bloqueante.
+    Wait,
+    /// Progreso — ocupado pero la UI responde.
+    Progress,
+    /// Interrogación — ayuda contextual.
+    Help,
+    /// Resize horizontal (columna / divisor vertical).
+    ColResize,
+    /// Resize vertical (fila / divisor horizontal).
+    RowResize,
+    /// Resize este-oeste.
+    EwResize,
+    /// Resize norte-sur.
+    NsResize,
+    /// Resize diagonal ↗↙.
+    NeswResize,
+    /// Resize diagonal ↖↘.
+    NwseResize,
+    /// Lupa + (zoom in).
+    ZoomIn,
+    /// Lupa − (zoom out).
+    ZoomOut,
 }
 
 pub struct MountedNode<Msg> {
@@ -315,10 +1193,28 @@ pub struct MountedNode<Msg> {
     pub fill: Option<Color>,
     pub hover_fill: Option<Color>,
     pub radius: f64,
+    pub corner_radii: Option<RoundedRectRadii>,
+    pub shadow: Option<Shadow>,
+    pub fill_gradient: Option<Gradient>,
+    pub border: Option<Border>,
     pub text: Option<TextSpec>,
     pub image: Option<Image>,
+    /// Política de encaje de [`Self::image`] (ver [`ImageFit`]). `None`
+    /// = `Contain`.
+    pub image_fit: Option<ImageFit>,
+    /// Máscara de luminancia del subárbol (CSS `mask-image`). Ver
+    /// [`View::mask_image`]. El paint aísla el subárbol y aplica la luminancia
+    /// de esta imagen como alpha. `None` = sin máscara.
+    pub mask_image: Option<Image>,
+    /// Encaje de [`Self::mask_image`] (size/position/repeat). `None` = estirar
+    /// al border-box. Ver [`MaskPlacement`]. Fase 7.1227.
+    pub mask_placement: Option<MaskPlacement>,
+    /// Capas de máscara adicionales `(imagen, operador)` (ver [`View::mask_extra`]).
+    /// Comparten el `mask_placement` con la capa 0. Fase 7.1231.
+    pub mask_extra: Vec<(Image, MaskCompose)>,
     pub painter: Option<PaintFn>,
     pub gpu_painter: Option<GpuPaintFn>,
+    pub over_painter: Option<PaintFn>,
     pub on_click: Option<Msg>,
     pub on_click_at: Option<ClickAtFn<Msg>>,
     pub on_right_click: Option<Msg>,
@@ -326,21 +1222,92 @@ pub struct MountedNode<Msg> {
     pub on_middle_click: Option<Msg>,
     pub drag: Option<DragFn<Msg>>,
     pub drag_at: Option<DragAtFn<Msg>>,
+    pub drag_velocity: Option<DragVelocityFn<Msg>>,
     pub drag_payload: Option<u64>,
     pub on_drop: Option<DropFn<Msg>>,
     pub drop_hover_fill: Option<Color>,
     pub clip: bool,
+    pub clip_inset: Option<[f32; 4]>,
+    pub clip_ellipse: Option<[f32; 14]>,
+    pub clip_polygon: Option<(bool, Vec<[f32; 4]>)>,
+    pub clip_path_svg: Option<(bool, String)>,
+    pub clip_ref_inset: Option<[f32; 4]>,
     pub on_pointer_enter: Option<Msg>,
     pub on_pointer_leave: Option<Msg>,
+    pub on_pointer_move_at: Option<ClickAtFn<Msg>>,
     pub on_scroll: Option<ScrollFn<Msg>>,
+    /// Handler de gesto de escala (pinch-to-zoom) de este nodo. Ver
+    /// [`View::on_scale`] y [`ScaleFn`].
+    pub on_scale: Option<ScaleFn<Msg>>,
+    /// Handler de gesto de rotación (trackpad) de este nodo. Ver
+    /// [`View::on_rotate`] y [`RotateFn`].
+    pub on_rotate: Option<RotateFn<Msg>>,
+    /// Handlers de doble-tap (ver [`View::on_double_tap`]).
+    pub on_double_tap: Option<Msg>,
+    pub on_double_tap_at: Option<ClickAtFn<Msg>>,
+    /// Handlers de long-press (ver [`View::on_long_press`]).
+    pub on_long_press: Option<Msg>,
+    pub on_long_press_at: Option<ClickAtFn<Msg>>,
     pub focusable: Option<u64>,
+    /// Key estable de selección de texto (ver [`View::selectable`]).
+    pub text_select_key: Option<u64>,
     pub alpha: Option<f32>,
+    pub anim: Option<Anim>,
+    /// Animación implícita de tamaño (ver [`View::animated_size`]). El
+    /// runtime ya parchó `style.size` antes del layout — este campo se
+    /// guarda principalmente para inspección/tests.
+    pub animated_size: Option<SizeAnim>,
+    /// Semántica accesible del nodo (ver [`View::semantics`]). El runtime la
+    /// lee en cada paint para reconstruir el árbol AccessKit del frame.
+    pub semantics: Option<SemanticsSpec>,
+    /// Marca de hero shared-element (ver [`View::hero`]). El runtime lo lee
+    /// en [`HeroRegistry::reconcile`] para enlazar identidad entre frames y
+    /// escribir `transform` con la afín "fly" cuando el rect cambia.
+    pub hero: Option<Hero>,
     /// Transformación afín 2D del nodo (alrededor del centro de su rect).
     /// Ver [`View::transform`]. `paint` la compone con la del padre.
     pub transform: Option<Affine>,
+    /// Traslación relativa al tamaño del nodo (fracciones de su rect). Ver
+    /// [`View::transform_rel`]. `paint`/`hit_test` la resuelven contra el rect.
+    pub transform_rel: Option<(f64, f64)>,
+    /// Pivote de `transform` (CSS `transform-origin`). `None` ⇒ centro. Ver
+    /// [`TransformPivot`] / [`View::transform_origin`].
+    pub transform_origin: Option<TransformPivot>,
     /// Texto de tooltip de este nodo (ver [`View::tooltip`]). El consumidor lo
     /// lee tras un hit-test de hover para pintar el rótulo flotante.
     pub tooltip: Option<String>,
+    /// Forma del puntero sobre este nodo (ver [`View::cursor`]). El runtime la
+    /// resuelve heredando del ancestro más cercano que la declare.
+    pub cursor: Option<Cursor>,
+    /// Ripple/InkWell de este nodo (ver [`View::ripple`]). El runtime lo
+    /// dispara en el press y lo pinta vía [`RippleRegistry`].
+    pub ripple: Option<Ripple>,
+    /// `true` si este nodo era un [`View::layout_builder`] (constructor diferido)
+    /// al montarse. El runtime lo usa tras la primera pasada de layout para leer
+    /// el rect del slot (vía [`collect_builder_constraints`]) e invocar la
+    /// closure. Tras expandirse, el nodo final ya es normal (`false`).
+    pub is_layout_builder: bool,
+    /// **Backdrop blur** (CSS `backdrop-filter: blur(N)` / Flutter
+    /// `BackdropFilter`). Sigma del Gauss en pixels; el runtime aplica una
+    /// pasada separable (H+V) sobre la intermediate restringida al rect del
+    /// nodo, **antes** de pintar el subárbol del nodo. El subárbol se compone
+    /// sobre el backdrop ya borroso vía un buffer secundario. `None` = sin
+    /// blur (la abrumadora mayoría). Limitación v1: el nodo no debe estar
+    /// dentro de un ancestro con clip/alpha (los subárboles separados pintan
+    /// fuera de esas capas — documentado en `PARIDAD-FLUTTER.md` Bloque 11).
+    pub backdrop_blur: Option<f32>,
+    /// Filtros CSS (`filter: …`) sobre el propio subárbol (ver [`View::filter`]
+    /// / [`FilterOp`]). El runtime los recolecta con [`collect_filters`] y los
+    /// aplica como post-pasada GPU sobre la intermediate, restringidos al rect
+    /// del nodo, **después** de la rasterización. Vacío = sin filtro. Fase
+    /// 7.1232.
+    pub filter: Vec<FilterOp>,
+    /// Modo de mezcla del nodo entero contra su backdrop (CSS `mix-blend-mode`).
+    /// Ver [`View::blend`] / [`MountedNode`]. `paint_range` abre una capa de
+    /// blend (`push_layer(bm, …)`) alrededor del rect del nodo que envuelve
+    /// fill + contenido + hijos y se cierra al fin del subárbol, mezclando el
+    /// resultado contra lo ya pintado. `None` = source-over. Fase 7.1237.
+    pub blend: Option<BlendMode>,
     /// Índice (exclusivo) del fin del subárbol en `Mounted::nodes`. Los
     /// descendientes ocupan `[idx + 1, subtree_end)`. Hace de "barrera" en
     /// paint/hit_test para `pop_layer` y para saltar subárboles enteros.

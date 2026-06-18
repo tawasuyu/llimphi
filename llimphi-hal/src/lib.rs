@@ -145,10 +145,13 @@ impl Hal {
             ..Default::default()
         });
         let (instance, adapter) = match primary.request_adapter(&opts).await {
-            Some(a) => (primary, a),
-            None => {
+            Ok(a) => (primary, a),
+            Err(_) => {
                 let all = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-                let a = all.request_adapter(&opts).await.ok_or(HalError::NoAdapter)?;
+                let a = all
+                    .request_adapter(&opts)
+                    .await
+                    .map_err(|_| HalError::NoAdapter)?;
                 (all, a)
             }
         };
@@ -158,15 +161,14 @@ impl Hal {
         // (texturas/buffers grandes) preservando los conteos mínimos.
         let limits = wgpu::Limits::default().using_resolution(adapter.limits());
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("llimphi-hal-device"),
-                    required_features: wgpu::Features::empty(),
-                    required_limits: limits,
-                    memory_hints: wgpu::MemoryHints::Performance,
-                },
-                None,
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("llimphi-hal-device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: limits,
+                memory_hints: wgpu::MemoryHints::Performance,
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                trace: wgpu::Trace::Off,
+            })
             .await
             .map_err(|e| HalError::RequestDevice(e.to_string()))?;
         Ok(Self {
@@ -220,8 +222,8 @@ impl Hal {
             })
             .await;
         let (instance, adapter, wgpu_surface) = match prim_adapter {
-            Some(a) => (primary, a, prim_surface),
-            None => {
+            Ok(a) => (primary, a, prim_surface),
+            Err(_) => {
                 let all = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
                 let surface = unsafe { all.create_surface_unsafe(make_target()) }
                     .map_err(|e| HalError::CreateSurface(e.to_string()))?;
@@ -232,21 +234,20 @@ impl Hal {
                         compatible_surface: Some(&surface),
                     })
                     .await
-                    .ok_or(HalError::NoAdapter)?;
+                    .map_err(|_| HalError::NoAdapter)?;
                 (all, a, surface)
             }
         };
         let limits = wgpu::Limits::default().using_resolution(adapter.limits());
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("llimphi-hal-device"),
-                    required_features: wgpu::Features::empty(),
-                    required_limits: limits,
-                    memory_hints: wgpu::MemoryHints::Performance,
-                },
-                None,
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("llimphi-hal-device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: limits,
+                memory_hints: wgpu::MemoryHints::Performance,
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                trace: wgpu::Trace::Off,
+            })
             .await
             .map_err(|e| HalError::RequestDevice(e.to_string()))?;
         let hal = Self {
@@ -403,11 +404,31 @@ impl RawSurface {
                 )))
             }
         };
-        let alpha_mode = caps
-            .alpha_modes
-            .first()
-            .copied()
-            .unwrap_or(wgpu::CompositeAlphaMode::Auto);
+        // Para una layer surface (wlr-layer-shell) la transparencia es
+        // crítica: la usamos para popovers/menús que pintan un panel chico y
+        // dejan el resto transparente para ver el escritorio. La heurística
+        // ingenua `caps.alpha_modes.first()` cae a veces en `Opaque` (el
+        // compositor descarta alpha) — el clear TRANSPARENT se compone como
+        // negro literal y el menú inicio sale como un cuadrón negro.
+        //
+        // Preferencia: PreMultiplied > PostMultiplied > Inherit > Auto >
+        // Opaque. Los dos primeros componen alpha como esperamos; los dos
+        // siguientes dejan que el compositor decida (típicamente respeta el
+        // alpha del buffer ARGB); Opaque es el último recurso.
+        let alpha_mode = {
+            use wgpu::CompositeAlphaMode as Mode;
+            let want = [
+                Mode::PreMultiplied,
+                Mode::PostMultiplied,
+                Mode::Inherit,
+                Mode::Auto,
+            ];
+            want.iter()
+                .copied()
+                .find(|m| caps.alpha_modes.contains(m))
+                .or_else(|| caps.alpha_modes.first().copied())
+                .unwrap_or(Mode::Auto)
+        };
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -719,6 +740,7 @@ impl OverlayCompositor {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
@@ -763,6 +785,735 @@ fn vs(@builtin(vertex_index) vi: u32) -> VsOut {
 @fragment
 fn fs(in: VsOut) -> @location(0) vec4<f32> {
     return textureSample(src_tex, src_samp, in.uv);
+}
+"#;
+
+/// Gaussian backdrop blur sobre la intermediate (la textura donde vello pinta
+/// la UI). El compositor empuja dos render passes separables (horizontal +
+/// vertical) restringidas por scissor al rect del nodo `.backdrop_blur(sigma)`,
+/// usando una textura scratch interna del mismo tamaño que la intermediate.
+///
+/// **Pipeline**: vs = triángulo grande full-screen (clip-space), fs = suma
+/// ponderada de N samples a lo largo de `direction`, pesos Gauss `exp(-i²/2σ²)`.
+/// El bind group lleva la textura source + sampler bilinear + UBO con
+/// `(direction, pixel_size, sigma, radius)`. El scissor recorta el output al
+/// rect del nodo; el resto del target queda intacto (LoadOp::Load).
+///
+/// **Coste**: una pasada por dirección por nodo blur, ~`2*radius+1` taps por
+/// pixel del rect. Para `sigma=8` (radius=24), ~49 taps/pixel — barato si el
+/// rect es pequeño (chrome), pesado si es full-screen. v1: sin cap dinámico,
+/// se asume que el caller no abusa.
+///
+/// **Limitaciones v1**:
+/// - Un scratch full-screen alocado por compositor; resize sigue al `Surface`.
+/// - `radius` cap en 32 — sigmas > ~10 se ven menos suaves (clip de cola).
+/// - Bordes del rect: clamp-to-edge (sampler) → los pixeles fuera del rect
+///   que se muestrean en la cola del Gauss salen como espejo del borde. En
+///   un viewport razonable la diferencia es invisible; documentado.
+pub struct BlurCompositor {
+    pipeline: wgpu::RenderPipeline,
+    sampler: wgpu::Sampler,
+    bind_layout: wgpu::BindGroupLayout,
+    scratch: Option<BlurScratch>,
+}
+
+struct BlurScratch {
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    width: u32,
+    height: u32,
+}
+
+/// Layout en GPU del UBO del blur. Debe coincidir con el `BlurParams` del WGSL.
+/// Padding explícito al final para llegar a múltiplo de 16 bytes (alignment
+/// estándar de uniformes en wgpu).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct BlurUniforms {
+    direction: [f32; 2],
+    pixel_size: [f32; 2],
+    sigma: f32,
+    radius: f32,
+    _pad: [f32; 2],
+}
+
+const BLUR_UBO_SIZE: u64 = std::mem::size_of::<BlurUniforms>() as u64;
+const BLUR_MAX_RADIUS: f32 = 32.0;
+
+impl BlurCompositor {
+    pub fn new(device: &wgpu::Device) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("llimphi-blur-shader"),
+            source: wgpu::ShaderSource::Wgsl(BLUR_WGSL.into()),
+        });
+        let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("llimphi-blur-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("llimphi-blur-pl"),
+            bind_group_layouts: &[&bind_layout],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("llimphi-blur-pipe"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: INTERMEDIATE_FORMAT,
+                    // El blur OVERWRITE el rect; no necesita alpha-over. El
+                    // resultado del Gauss es opaco si los pixeles muestreados
+                    // lo son (la intermediate tiene UI + background opaco).
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("llimphi-blur-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        BlurCompositor {
+            pipeline,
+            sampler,
+            bind_layout,
+            scratch: None,
+        }
+    }
+
+    /// Aplica un blur Gaussiano sobre `target` en el rect dado (coords pixel
+    /// del viewport). Si el rect cae fuera del viewport, no hace nada. Usa
+    /// un scratch interno del mismo tamaño que el viewport — se aloca lazy y
+    /// se reusa entre frames; se recrea si el viewport cambió.
+    ///
+    /// `sigma` controla el ancho del kernel. ~`σ=4` da "frosted glass" suave,
+    /// `σ=16` un blur fuerte. El radius efectivo se cap a [`BLUR_MAX_RADIUS`].
+    pub fn blur(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        viewport: (u32, u32),
+        rect: (f32, f32, f32, f32),
+        sigma: f32,
+    ) {
+        let (vw, vh) = viewport;
+        if vw == 0 || vh == 0 || sigma <= 0.0 {
+            return;
+        }
+        let (rx, ry, rw, rh) = rect;
+        // Clamp scissor al viewport (un rect fuera del viewport pifia el
+        // RenderPass).
+        let x0 = rx.max(0.0) as u32;
+        let y0 = ry.max(0.0) as u32;
+        let x1 = (rx + rw).min(vw as f32).max(0.0) as u32;
+        let y1 = (ry + rh).min(vh as f32).max(0.0) as u32;
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
+        let scissor = (x0, y0, x1 - x0, y1 - y0);
+
+        // Scratch del tamaño del viewport. Si cambió, recrear.
+        let need_new = match &self.scratch {
+            Some(s) => s.width != vw || s.height != vh,
+            None => true,
+        };
+        if need_new {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("llimphi-blur-scratch"),
+                size: wgpu::Extent3d {
+                    width: vw,
+                    height: vh,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: INTERMEDIATE_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.scratch = Some(BlurScratch {
+                _texture: texture,
+                view,
+                width: vw,
+                height: vh,
+            });
+        }
+        let scratch_view = &self.scratch.as_ref().expect("scratch creado arriba").view;
+
+        let radius = (sigma * 3.0).ceil().min(BLUR_MAX_RADIUS);
+        let pixel_size = [1.0 / vw as f32, 1.0 / vh as f32];
+        let ubo_h_data = BlurUniforms {
+            direction: [1.0, 0.0],
+            pixel_size,
+            sigma,
+            radius,
+            _pad: [0.0, 0.0],
+        };
+        let ubo_v_data = BlurUniforms {
+            direction: [0.0, 1.0],
+            pixel_size,
+            sigma,
+            radius,
+            _pad: [0.0, 0.0],
+        };
+        // UBOs por llamada (ver nota en `ColorFilterCompositor::apply`): varios
+        // blurs en el mismo submit con sigmas distintos no deben aliasar un UBO
+        // compartido (ganaría el último). Buffers frescos por llamada (32 bytes).
+        let ubo_h = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("llimphi-blur-ubo-h"),
+            size: BLUR_UBO_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let ubo_v = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("llimphi-blur-ubo-v"),
+            size: BLUR_UBO_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&ubo_h, 0, bytemuck_cast(&ubo_h_data));
+        queue.write_buffer(&ubo_v, 0, bytemuck_cast(&ubo_v_data));
+
+        // Pass 1: target → scratch (horizontal).
+        let bg_h = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("llimphi-blur-bg-h"),
+            layout: &self.bind_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(target),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: ubo_h.as_entire_binding(),
+                },
+            ],
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("llimphi-blur-pass-h"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: scratch_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        // No nos importa qué hay fuera del scissor: el segundo
+                        // pase sólo lee dentro del scissor también.
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &bg_h, &[]);
+            pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
+            pass.draw(0..3, 0..1);
+        }
+
+        // Pass 2: scratch → target (vertical), preservando lo fuera del scissor.
+        let bg_v = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("llimphi-blur-bg-v"),
+            layout: &self.bind_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(scratch_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: ubo_v.as_entire_binding(),
+                },
+            ],
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("llimphi-blur-pass-v"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &bg_v, &[]);
+            pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
+            pass.draw(0..3, 0..1);
+        }
+    }
+}
+
+/// Aplica una **matriz de color 4×5** (CSS `filter: brightness/contrast/
+/// grayscale/sepia/saturate/invert/hue-rotate/opacity`) sobre un rect de la
+/// intermediate. Espejo de [`BlurCompositor`] pero con un fragment shader que
+/// multiplica cada píxel por la matriz: `out = M·rgba + bias`, clampeado a
+/// `[0,1]`. Dos pases (target→scratch aplicando la matriz, scratch→target
+/// copia identidad) por la misma razón que el blur: un render pass no puede
+/// leer y escribir la misma textura. Fase 7.1233.
+pub struct ColorFilterCompositor {
+    pipeline: wgpu::RenderPipeline,
+    sampler: wgpu::Sampler,
+    bind_layout: wgpu::BindGroupLayout,
+    scratch: Option<BlurScratch>,
+}
+
+/// UBO de la matriz de color. 5 `vec4` (filas R/G/B/A + bias) = 80 bytes,
+/// múltiplo de 16. Debe coincidir con `ColorParams` del WGSL.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ColorUniforms {
+    r: [f32; 4],
+    g: [f32; 4],
+    b: [f32; 4],
+    a: [f32; 4],
+    bias: [f32; 4],
+}
+
+const COLOR_UBO_SIZE: u64 = std::mem::size_of::<ColorUniforms>() as u64;
+
+/// La matriz identidad (copia sin cambios), usada en el segundo pase.
+const COLOR_IDENTITY: ColorUniforms = ColorUniforms {
+    r: [1.0, 0.0, 0.0, 0.0],
+    g: [0.0, 1.0, 0.0, 0.0],
+    b: [0.0, 0.0, 1.0, 0.0],
+    a: [0.0, 0.0, 0.0, 1.0],
+    bias: [0.0, 0.0, 0.0, 0.0],
+};
+
+impl ColorFilterCompositor {
+    pub fn new(device: &wgpu::Device) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("llimphi-color-filter-shader"),
+            source: wgpu::ShaderSource::Wgsl(COLOR_WGSL.into()),
+        });
+        let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("llimphi-color-filter-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("llimphi-color-filter-pl"),
+            bind_group_layouts: &[&bind_layout],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("llimphi-color-filter-pipe"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: INTERMEDIATE_FORMAT,
+                    // OVERWRITE el rect, igual que el blur — el resultado de la
+                    // matriz reemplaza el píxel.
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("llimphi-color-filter-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        ColorFilterCompositor {
+            pipeline,
+            sampler,
+            bind_layout,
+            scratch: None,
+        }
+    }
+
+    /// Aplica la matriz de color `matrix` (4×5 row-major: por fila
+    /// `[c0, c1, c2, c3, bias]`, salida R/G/B/A) sobre `target` en el rect dado
+    /// (coords pixel del viewport). Fuera del viewport no hace nada. Usa un
+    /// scratch del tamaño del viewport (lazy, reusado entre frames).
+    pub fn apply(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        viewport: (u32, u32),
+        rect: (f32, f32, f32, f32),
+        matrix: [f32; 20],
+    ) {
+        let (vw, vh) = viewport;
+        if vw == 0 || vh == 0 {
+            return;
+        }
+        let (rx, ry, rw, rh) = rect;
+        let x0 = rx.max(0.0) as u32;
+        let y0 = ry.max(0.0) as u32;
+        let x1 = (rx + rw).min(vw as f32).max(0.0) as u32;
+        let y1 = (ry + rh).min(vh as f32).max(0.0) as u32;
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
+        let scissor = (x0, y0, x1 - x0, y1 - y0);
+
+        let need_new = match &self.scratch {
+            Some(s) => s.width != vw || s.height != vh,
+            None => true,
+        };
+        if need_new {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("llimphi-color-filter-scratch"),
+                size: wgpu::Extent3d {
+                    width: vw,
+                    height: vh,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: INTERMEDIATE_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.scratch = Some(BlurScratch {
+                _texture: texture,
+                view,
+                width: vw,
+                height: vh,
+            });
+        }
+        let scratch_view = &self.scratch.as_ref().expect("scratch creado arriba").view;
+
+        // El [f32;20] viene por filas de 5 (`[c0,c1,c2,c3,bias]`); lo partimos
+        // en 4 vec4 de coeficientes + un vec4 de bias para el UBO.
+        let apply = ColorUniforms {
+            r: [matrix[0], matrix[1], matrix[2], matrix[3]],
+            g: [matrix[5], matrix[6], matrix[7], matrix[8]],
+            b: [matrix[10], matrix[11], matrix[12], matrix[13]],
+            a: [matrix[15], matrix[16], matrix[17], matrix[18]],
+            bias: [matrix[4], matrix[9], matrix[14], matrix[19]],
+        };
+        // UBOs **por llamada**: varias `apply` en el mismo encoder/submit
+        // comparten cola; `write_buffer` se aplica una vez antes de los command
+        // buffers (gana el último valor escrito), así que un UBO compartido haría
+        // que todas las pasadas leyeran la última matriz. Buffers frescos por
+        // llamada evitan ese alias (80 bytes c/u, despreciable).
+        let ubo_apply = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("llimphi-color-filter-ubo-apply"),
+            size: COLOR_UBO_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let ubo_copy = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("llimphi-color-filter-ubo-copy"),
+            size: COLOR_UBO_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&ubo_apply, 0, bytemuck_cast(&apply));
+        queue.write_buffer(&ubo_copy, 0, bytemuck_cast(&COLOR_IDENTITY));
+
+        // Pass 1: target → scratch (aplica la matriz).
+        let bg_apply = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("llimphi-color-filter-bg-apply"),
+            layout: &self.bind_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(target),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: ubo_apply.as_entire_binding(),
+                },
+            ],
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("llimphi-color-filter-pass-apply"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: scratch_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &bg_apply, &[]);
+            pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
+            pass.draw(0..3, 0..1);
+        }
+
+        // Pass 2: scratch → target (copia identidad), preservando lo de afuera.
+        let bg_copy = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("llimphi-color-filter-bg-copy"),
+            layout: &self.bind_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(scratch_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: ubo_copy.as_entire_binding(),
+                },
+            ],
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("llimphi-color-filter-pass-copy"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &bg_copy, &[]);
+            pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
+            pass.draw(0..3, 0..1);
+        }
+    }
+}
+
+/// "bytemuck" minimal sin dep: convierte `&T` a `&[u8]`. Sólo para POD repr(C)
+/// — usado para escribir los UBOs del blur con `queue.write_buffer`.
+fn bytemuck_cast<T: Copy>(v: &T) -> &[u8] {
+    unsafe {
+        std::slice::from_raw_parts(
+            v as *const T as *const u8,
+            std::mem::size_of::<T>(),
+        )
+    }
+}
+
+/// Separable Gaussian, una dirección por pase. El vs es el mismo triángulo
+/// grande del overlay; el fs samplea `2*radius+1` taps a lo largo de
+/// `direction*pixel_size`. Pesos `exp(-i²/2σ²)` normalizados por la suma —
+/// independiente del radius por si quedó cortada la cola.
+const BLUR_WGSL: &str = r#"
+struct VsOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs(@builtin(vertex_index) vi: u32) -> VsOut {
+    var corners = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>( 3.0, -1.0),
+        vec2<f32>(-1.0,  3.0),
+    );
+    let xy = corners[vi];
+    var out: VsOut;
+    out.pos = vec4<f32>(xy, 0.0, 1.0);
+    out.uv = vec2<f32>((xy.x + 1.0) * 0.5, (1.0 - xy.y) * 0.5);
+    return out;
+}
+
+struct BlurParams {
+    direction: vec2<f32>,
+    pixel_size: vec2<f32>,
+    sigma: f32,
+    radius: f32,
+    _pad: vec2<f32>,
+};
+
+@group(0) @binding(0) var src_tex: texture_2d<f32>;
+@group(0) @binding(1) var src_samp: sampler;
+@group(0) @binding(2) var<uniform> params: BlurParams;
+
+@fragment
+fn fs(in: VsOut) -> @location(0) vec4<f32> {
+    let dir = params.direction * params.pixel_size;
+    let r = i32(params.radius);
+    let two_sigma_sq = 2.0 * params.sigma * params.sigma;
+    var acc = vec4<f32>(0.0);
+    var weight_sum = 0.0;
+    for (var i = -r; i <= r; i = i + 1) {
+        let fi = f32(i);
+        let w = exp(-(fi * fi) / two_sigma_sq);
+        acc = acc + textureSample(src_tex, src_samp, in.uv + dir * fi) * w;
+        weight_sum = weight_sum + w;
+    }
+    return acc / weight_sum;
+}
+"#;
+
+/// Matriz de color 4×5: `out = M·rgba + bias`, clampeado a `[0,1]`. El vs es el
+/// mismo triángulo grande; el fs hace 4 `dot` (una fila por canal) más el bias.
+const COLOR_WGSL: &str = r#"
+struct VsOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs(@builtin(vertex_index) vi: u32) -> VsOut {
+    var corners = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>( 3.0, -1.0),
+        vec2<f32>(-1.0,  3.0),
+    );
+    let xy = corners[vi];
+    var out: VsOut;
+    out.pos = vec4<f32>(xy, 0.0, 1.0);
+    out.uv = vec2<f32>((xy.x + 1.0) * 0.5, (1.0 - xy.y) * 0.5);
+    return out;
+}
+
+struct ColorParams {
+    r: vec4<f32>,
+    g: vec4<f32>,
+    b: vec4<f32>,
+    a: vec4<f32>,
+    bias: vec4<f32>,
+};
+
+@group(0) @binding(0) var src_tex: texture_2d<f32>;
+@group(0) @binding(1) var src_samp: sampler;
+@group(0) @binding(2) var<uniform> params: ColorParams;
+
+@fragment
+fn fs(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(src_tex, src_samp, in.uv);
+    var o: vec4<f32>;
+    o.r = dot(params.r, c) + params.bias.r;
+    o.g = dot(params.g, c) + params.bias.g;
+    o.b = dot(params.b, c) + params.bias.b;
+    o.a = dot(params.a, c) + params.bias.a;
+    return clamp(o, vec4<f32>(0.0), vec4<f32>(1.0));
 }
 "#;
 

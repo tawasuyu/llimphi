@@ -65,6 +65,12 @@ pub const DEFAULT_LINE_PX: f32 = 48.0;
 /// Ancho de la barra de scroll en px.
 pub const DEFAULT_BAR_WIDTH: f32 = 10.0;
 
+/// Factor de alpha por defecto para el thumb en reposo — tenue moderno
+/// estilo Chromium/Edge/Safari: visible pero discreto. Al hover sobre la
+/// barra recupera alpha completo. `1.0` reproduce el comportamiento
+/// histórico (thumb siempre opaco).
+pub const DEFAULT_THUMB_IDLE_ALPHA: f32 = 0.55;
+
 /// Colores de la barra de scroll.
 #[derive(Debug, Clone, Copy)]
 pub struct ScrollPalette {
@@ -77,6 +83,12 @@ pub struct ScrollPalette {
     /// Ancho de la barra y px por línea de rueda.
     pub bar_width: f32,
     pub line_px: f32,
+    /// Multiplicador de alpha aplicado al `thumb` en reposo. `1.0` deja
+    /// el color sin tocar (comportamiento legacy); `≤ 0.0` esconde el
+    /// thumb del todo en reposo. El `hover_fill` no se ve afectado: al
+    /// pasar el cursor sobre la barra el thumb recupera el alpha completo
+    /// del `thumb_hover`.
+    pub thumb_idle_alpha: f32,
 }
 
 impl Default for ScrollPalette {
@@ -93,7 +105,16 @@ impl ScrollPalette {
             thumb_hover: t.accent,
             bar_width: DEFAULT_BAR_WIDTH,
             line_px: DEFAULT_LINE_PX,
+            thumb_idle_alpha: DEFAULT_THUMB_IDLE_ALPHA,
         }
+    }
+
+    /// Devuelve la `ScrollPalette` con el comportamiento histórico (thumb
+    /// opaco en reposo, sin auto-hide visual). Para apps que dependen del
+    /// look anterior al cambio del 2026-06-07.
+    pub fn opaque(mut self) -> Self {
+        self.thumb_idle_alpha = 1.0;
+        self
     }
 }
 
@@ -142,6 +163,162 @@ pub fn approach(current: f32, target: f32, factor: f32) -> f32 {
     } else {
         next
     }
+}
+
+/// Velocidad (px/s) por debajo de la cual una inercia se considera detenida.
+pub const FLING_STOP: f32 = 8.0;
+/// Fricción por defecto del fling: fracción de velocidad que **sobrevive por
+/// segundo** (más chico = frena antes). 0.0015 ≈ deslizamiento tipo lista
+/// táctil; subilo (p. ej. 0.1) para frenar rápido.
+pub const FLING_FRICTION: f32 = 0.0015;
+
+/// Un paso de **inercia** (fling): dado `velocity` en px/s y `dt` en segundos,
+/// devuelve `(nueva_velocidad, delta_offset)` bajo decaimiento exponencial
+/// `v(t) = v·friction^t`. `friction ∈ (0,1]` es la fracción de velocidad que
+/// sobrevive por segundo. El `delta` es la integral exacta de la velocidad
+/// sobre el paso (no el rectángulo `v·dt`), así el frenado no depende del
+/// frame-rate. El caller suma `delta` al offset (clampeando con
+/// [`clamp_offset`]) y reusa `nueva_velocidad` el próximo frame hasta que
+/// [`fling_settled`] dé `true`. Es el análogo de [`approach`] pero para
+/// "soltar con envión" en vez de "ir hacia un objetivo".
+pub fn fling_step(velocity: f32, dt: f32, friction: f32) -> (f32, f32) {
+    let f = friction.clamp(1e-6, 1.0);
+    let decay = f.powf(dt.max(0.0));
+    let new_v = velocity * decay;
+    let delta = if (f - 1.0).abs() < 1e-6 {
+        velocity * dt
+    } else {
+        // ∫₀^dt v·f^s ds = v·(f^dt − 1)/ln f.
+        velocity * (decay - 1.0) / f.ln()
+    };
+    (new_v, delta)
+}
+
+/// ¿La inercia ya se detuvo? `true` cuando `|velocity| < FLING_STOP` — el
+/// caller corta el ticker y deja el offset quieto.
+pub fn fling_settled(velocity: f32) -> bool {
+    velocity.abs() < FLING_STOP
+}
+
+/// Resistencia elástica (rubber-band) al **sobrepasar un borde**, estilo iOS:
+/// dado cuánto se pasó del límite (`overscroll`, px; el signo se conserva) y la
+/// dimensión del viewport (`dim`), devuelve el desplazamiento visual
+/// **amortiguado** — siempre menor en magnitud que `overscroll`, con
+/// rendimiento decreciente cuanto más se estira. El caller lo usa para pintar
+/// el contenido un poco más allá del tope mientras arrastra, y lo libera
+/// (anima a 0 con [`approach`]) al soltar. Constante 0.55 = la de Apple.
+pub fn rubber_band(overscroll: f32, dim: f32) -> f32 {
+    if dim <= 0.0 || overscroll == 0.0 {
+        return overscroll;
+    }
+    const C: f32 = 0.55;
+    let x = overscroll.abs();
+    (1.0 - 1.0 / (x * C / dim + 1.0)) * dim * overscroll.signum()
+}
+
+// ── Auto-hide del thumb (timer-driven, lo maneja la app) ──
+
+/// Segundos que el thumb queda a opacidad plena tras la última interacción de
+/// scroll antes de empezar a desvanecerse.
+pub const THUMB_HOLD_SECS: f32 = 1.2;
+/// Segundos que tarda el thumb en desvanecerse de pleno a invisible.
+pub const THUMB_FADE_SECS: f32 = 0.4;
+
+/// Opacidad del thumb en función de los segundos desde la última interacción
+/// de scroll (auto-hide estilo overlay móvil/Chromium): pleno (`1.0`) durante
+/// [`THUMB_HOLD_SECS`], luego baja linealmente a `0.0` en [`THUMB_FADE_SECS`].
+///
+/// El bucle Elm reconstruye el `View` sin estado retenido, así que el timer lo
+/// lleva la app (igual que el fling): trackeá `last_scroll: Instant` en el
+/// Model, reseteándolo en cada `on_scroll`, y antes de llamar a
+/// `scroll_y`/`scroll_xy` hacé `palette.thumb_idle_alpha =
+/// thumb_autohide_alpha(last_scroll.elapsed().as_secs_f32())`. Mientras
+/// [`thumb_autohide_active`] sea `true`, pedí frames (`Handle::spawn_periodic`).
+/// En reposo el thumb queda invisible pero su `hover_fill` lo revela al pasar
+/// el cursor por el borde.
+pub fn thumb_autohide_alpha(secs_since_scroll: f32) -> f32 {
+    if secs_since_scroll <= THUMB_HOLD_SECS {
+        return 1.0;
+    }
+    let fade = (secs_since_scroll - THUMB_HOLD_SECS) / THUMB_FADE_SECS.max(1e-3);
+    (1.0 - fade).clamp(0.0, 1.0)
+}
+
+/// `true` mientras el thumb sigue desvaneciéndose (la app debe seguir pidiendo
+/// frames). Una vez invisible (pasado hold+fade), devuelve `false` y la app
+/// puede dejar de tickear.
+pub fn thumb_autohide_active(secs_since_scroll: f32) -> bool {
+    secs_since_scroll < THUMB_HOLD_SECS + THUMB_FADE_SECS
+}
+
+// ── Pull-to-refresh (compone sobre el overscroll que ya maneja la app) ──
+
+/// Distancia de overscroll (px) a la que el pull-to-refresh queda **armado**
+/// por defecto: soltar más allá dispara el refresh.
+pub const DEFAULT_PULL_THRESHOLD: f32 = 64.0;
+
+/// Progreso del gesto pull-to-refresh en `[0,1]`: qué fracción del umbral
+/// cubre el `overscroll` actual en el tope (distancia que el contenido fue
+/// arrastrado más allá del borde superior — la app ya la computa para el
+/// [`rubber_band`]). Alimenta el barrido de [`pull_indicator_view`].
+pub fn pull_progress(overscroll_px: f32, threshold_px: f32) -> f32 {
+    if threshold_px <= 0.0 {
+        return 0.0;
+    }
+    (overscroll_px / threshold_px).clamp(0.0, 1.0)
+}
+
+/// `true` si el overscroll alcanzó el umbral — soltar en este punto dispara el
+/// refresh. La app lo chequea en `DragPhase::End`/al asentar el rubber-band.
+pub fn pull_triggered(overscroll_px: f32, threshold_px: f32) -> bool {
+    threshold_px > 0.0 && overscroll_px >= threshold_px
+}
+
+// ── Slivers: app-bar colapsable + sticky headers (seam "extent-por-offset") ──
+
+/// Altura de un **app-bar colapsable** dado el `offset` de scroll: arranca en
+/// `header_max` (offset 0) y baja linealmente hasta `header_min`, donde queda
+/// fijado (pinned). El "rango de colapso" es `header_max - header_min`.
+pub fn collapsed_height(offset: f32, header_max: f32, header_min: f32) -> f32 {
+    (header_max - offset.max(0.0)).clamp(header_min, header_max)
+}
+
+/// Fracción de colapso del app-bar en `[0, 1]`: `0` = expandido (offset 0),
+/// `1` = colapsado al mínimo. El caller la usa para fundir el título, achicar
+/// un subtítulo, bajar la opacidad de una imagen de fondo, etc.
+pub fn collapse_fraction(offset: f32, header_max: f32, header_min: f32) -> f32 {
+    let range = (header_max - header_min).max(0.0);
+    if range <= 0.0 {
+        return 1.0;
+    }
+    (offset.max(0.0) / range).clamp(0.0, 1.0)
+}
+
+/// Offset máximo de scroll con un app-bar colapsable: los `header_max -
+/// header_min` px que consume el colapso **más** lo que scrollee el cuerpo
+/// bajo el header ya fijado en `header_min`. El caller lo usa para clampear.
+pub fn sliver_max_offset(
+    content_len: f32,
+    viewport_len: f32,
+    header_max: f32,
+    header_min: f32,
+) -> f32 {
+    let range = (header_max - header_min).max(0.0);
+    let body_vp = (viewport_len - header_min).max(0.0);
+    range + max_offset(content_len, body_vp)
+}
+
+/// Posición `y` (relativa al tope del viewport) de un encabezado **sticky** de
+/// una sección que ocupa `[section_top, section_top + section_h]` en
+/// coordenadas de contenido, con altura de encabezado `header_h`. Mientras la
+/// sección está en pantalla, el encabezado se **pega al tope** (`y = 0`); al
+/// llegar la próxima sección, ésta lo **empuja** hacia arriba (no pasa de
+/// `section_bottom - header_h`). Antes de que la sección llegue al tope, sigue
+/// su posición natural. El caller posiciona el encabezado absoluto en esta `y`.
+pub fn sticky_y(offset: f32, section_top: f32, section_h: f32, header_h: f32) -> f32 {
+    let natural = section_top - offset; // y del encabezado sin sticky
+    let section_bottom = section_top + section_h - offset;
+    natural.max(0.0).min(section_bottom - header_h)
 }
 
 /// Geometría del thumb: `(altura, posición_y)` dentro del track de alto
@@ -224,7 +401,7 @@ where
             },
             ..Default::default()
         })
-        .fill(palette.thumb)
+        .fill(palette.thumb.multiply_alpha(palette.thumb_idle_alpha.clamp(0.0, 1.0)))
         .hover_fill(palette.thumb_hover)
         .radius((palette.bar_width * 0.5) as f64)
         .draggable(move |phase, _dx, dy| match phase {
@@ -257,8 +434,16 @@ where
     // Viewport: alto fijo, ancho del padre, contenido recortado, rueda
     // local. Position::Relative para ser el bloque contenedor de los
     // hijos absolutos.
+    //
+    // **Scroll anidado**: si el delta del eje vertical es hacia un extremo
+    // donde ya estamos topados (offset = 0 con dy<0, u offset = max con
+    // dy>0), devolvemos `None` para que el runtime propague el evento al
+    // ancestro scrollable más cercano (lista dentro de panel, etc.).
     let line_px = palette.line_px;
     let on_wheel = on_scroll;
+    let max_off = max_offset(content_len, viewport_len);
+    let at_top = offset <= 0.0;
+    let at_bottom = offset >= max_off;
     View::new(Style {
         position: Position::Relative,
         size: Size {
@@ -268,13 +453,319 @@ where
         ..Default::default()
     })
     .clip(true)
-    .on_scroll(move |_dx, dy| Some((on_wheel)(dy * line_px)))
+    .on_scroll(move |_dx, dy| {
+        let delta = dy * line_px;
+        if (delta < 0.0 && at_top) || (delta > 0.0 && at_bottom) {
+            return None;
+        }
+        Some((on_wheel)(delta))
+    })
     .children(children)
+}
+
+/// Área de scroll **2D** (horizontal + vertical). Generaliza [`scroll_y`] a dos
+/// ejes: el contenido toma su tamaño natural y se desplaza `(-x, -y)`, recortado
+/// al viewport; aparece una barra por eje que tenga overflow (ninguna, una o
+/// las dos). Para scroll puramente horizontal, pasá `content_size.1 ==
+/// viewport_size.1` (no sale barra vertical).
+///
+/// `on_scroll(dx, dy)` recibe el **delta en px por eje** a sumar a cada offset
+/// (rueda → ambos ejes; arrastre de la barra vertical → sólo `dy`; horizontal →
+/// sólo `dx`). El caller acumula y clampea cada eje con [`clamp_offset`]. Las
+/// dos barras se solapan en una esquinita inferior-derecha (v1; cosmético).
+pub fn scroll_xy<Msg, F>(
+    offset: (f32, f32),
+    content_size: (f32, f32),
+    viewport_size: (f32, f32),
+    content: View<Msg>,
+    on_scroll: F,
+    palette: &ScrollPalette,
+) -> View<Msg>
+where
+    Msg: Clone + 'static,
+    F: Fn(f32, f32) -> Msg + Send + Sync + 'static,
+{
+    let (ox, oy) = offset;
+    let (cw, ch) = content_size;
+    let (vw, vh) = viewport_size;
+    let on_scroll = Arc::new(on_scroll);
+
+    // Contenido a tamaño natural, desplazado (-x, -y). right/bottom = auto para
+    // que no lo achique el viewport (a diferencia de scroll_y, que ancla
+    // left/right para tomar el ancho del viewport).
+    let content_wrap = View::new(Style {
+        position: Position::Absolute,
+        inset: Rect {
+            top: length(-oy),
+            left: length(-ox),
+            right: auto(),
+            bottom: auto(),
+        },
+        ..Default::default()
+    })
+    .children(vec![content]);
+
+    let mut children = vec![content_wrap];
+
+    // Barra vertical (borde derecho) — sólo si hay overflow vertical.
+    if max_offset(ch, vh) > 0.0 {
+        let (thumb_h, thumb_y, opp) = thumb_geometry(oy, ch, vh);
+        let f = on_scroll.clone();
+        let thumb = View::new(Style {
+            position: Position::Absolute,
+            inset: Rect { top: length(thumb_y), right: length(0.0), left: auto(), bottom: auto() },
+            size: Size { width: length(palette.bar_width), height: length(thumb_h) },
+            ..Default::default()
+        })
+        .fill(palette.thumb.multiply_alpha(palette.thumb_idle_alpha.clamp(0.0, 1.0)))
+        .hover_fill(palette.thumb_hover)
+        .radius((palette.bar_width * 0.5) as f64)
+        .draggable(move |phase, _dx, dy| match phase {
+            DragPhase::Move => Some((f)(0.0, dy * opp)),
+            DragPhase::End => None,
+        });
+        let track = View::new(Style {
+            position: Position::Absolute,
+            inset: Rect { top: length(0.0), right: length(0.0), bottom: length(0.0), left: auto() },
+            size: Size { width: length(palette.bar_width), height: auto() },
+            ..Default::default()
+        })
+        .fill(palette.track)
+        .children(vec![thumb]);
+        children.push(track);
+    }
+
+    // Barra horizontal (borde inferior) — sólo si hay overflow horizontal.
+    if max_offset(cw, vw) > 0.0 {
+        let (thumb_w, thumb_x, opp) = thumb_geometry(ox, cw, vw);
+        let f = on_scroll.clone();
+        let thumb = View::new(Style {
+            position: Position::Absolute,
+            inset: Rect { left: length(thumb_x), bottom: length(0.0), top: auto(), right: auto() },
+            size: Size { width: length(thumb_w), height: length(palette.bar_width) },
+            ..Default::default()
+        })
+        .fill(palette.thumb.multiply_alpha(palette.thumb_idle_alpha.clamp(0.0, 1.0)))
+        .hover_fill(palette.thumb_hover)
+        .radius((palette.bar_width * 0.5) as f64)
+        .draggable(move |phase, dx, _dy| match phase {
+            DragPhase::Move => Some((f)(dx * opp, 0.0)),
+            DragPhase::End => None,
+        });
+        let track = View::new(Style {
+            position: Position::Absolute,
+            inset: Rect { left: length(0.0), right: length(0.0), bottom: length(0.0), top: auto() },
+            size: Size { width: auto(), height: length(palette.bar_width) },
+            ..Default::default()
+        })
+        .fill(palette.track)
+        .children(vec![thumb]);
+        children.push(track);
+    }
+
+    // Scroll anidado 2D: si el delta NETO está bloqueado en ambos ejes
+    // (cada componente cae en un extremo del eje correspondiente),
+    // devolvemos `None` para propagar al ancestro scrollable. Si al menos
+    // un eje aún tiene recorrido, el evento se consume entero (como antes).
+    let line_px = palette.line_px;
+    let on_wheel = on_scroll;
+    let max_ox = max_offset(cw, vw);
+    let max_oy = max_offset(ch, vh);
+    let at_left = ox <= 0.0;
+    let at_right = ox >= max_ox;
+    let at_top = oy <= 0.0;
+    let at_bottom = oy >= max_oy;
+    View::new(Style {
+        position: Position::Relative,
+        size: Size { width: length(vw), height: length(vh) },
+        ..Default::default()
+    })
+    .clip(true)
+    // Rueda: dy = eje vertical; dx = eje horizontal (ratones/touchpads 2D, o
+    // Shift+rueda en algunos backends). Ambos en px-línea.
+    .on_scroll(move |dx, dy| {
+        let ddx = dx * line_px;
+        let ddy = dy * line_px;
+        let x_blocked = (ddx < 0.0 && at_left)
+            || (ddx > 0.0 && at_right)
+            || ddx == 0.0;
+        let y_blocked = (ddy < 0.0 && at_top)
+            || (ddy > 0.0 && at_bottom)
+            || ddy == 0.0;
+        if x_blocked && y_blocked {
+            return None;
+        }
+        Some((on_wheel)(ddx, ddy))
+    })
+    .children(children)
+}
+
+/// Indicador circular del **pull-to-refresh**. Mientras el usuario arrastra
+/// más allá del tope, un arco se completa con `progress` (0→1, de
+/// [`pull_progress`]); al alcanzar 1 el círculo queda cerrado ("armado"). Con
+/// `refreshing = true` gira como spinner (arco de 270° rotando por reloj
+/// absoluto — pedí frames mientras dure). `size_px` es el diámetro.
+///
+/// La app lo posiciona en la zona de overscroll del tope (típico: centrado
+/// arriba, bajando junto con el contenido arrastrado). Es puro paint; no
+/// retiene estado.
+pub fn pull_indicator_view<Msg: Clone + 'static>(
+    progress: f32,
+    refreshing: bool,
+    size_px: f32,
+    palette: &ScrollPalette,
+) -> View<Msg> {
+    let p = progress.clamp(0.0, 1.0);
+    let arc_color = palette.thumb;
+    let track_color = palette.track;
+    let started = std::time::Instant::now();
+    View::new(Style {
+        size: Size {
+            width: length(size_px),
+            height: length(size_px),
+        },
+        flex_shrink: 0.0,
+        ..Default::default()
+    })
+    .paint_with(move |scene, _ts, rect| {
+        use llimphi_ui::llimphi_raster::kurbo::{Affine, Arc, Point, Shape, Stroke, Vec2};
+        use std::f64::consts::TAU;
+
+        if rect.w <= 0.0 || rect.h <= 0.0 {
+            return;
+        }
+        let d = (rect.w.min(rect.h)) as f64;
+        let stroke_w = (d * 0.1).clamp(1.5, 4.0);
+        let r = d * 0.5 - stroke_w;
+        if r <= 0.0 {
+            return;
+        }
+        let cx = (rect.x + rect.w * 0.5) as f64;
+        let cy = (rect.y + rect.h * 0.5) as f64;
+        let center = Point::new(cx, cy);
+        let radii = Vec2::new(r, r);
+        let stroke = Stroke::new(stroke_w);
+
+        // Anillo de fondo tenue (track).
+        let ring = Arc::new(center, radii, 0.0, TAU, 0.0).to_path(0.2);
+        scene.stroke(&stroke, Affine::IDENTITY, track_color, None, &ring);
+
+        // Arco activo: arranca arriba (12 en punto = -PI/2). Si refresca, gira
+        // un arco de 270°; si no, barre proporcional al progreso.
+        let top = -std::f64::consts::FRAC_PI_2;
+        let (start, sweep) = if refreshing {
+            let spin = started.elapsed().as_secs_f64() * 3.0; // rad/s
+            (top + spin, TAU * 0.75)
+        } else {
+            (top, TAU * p as f64)
+        };
+        if sweep.abs() > 1e-3 {
+            let active = Arc::new(center, radii, start, sweep, 0.0).to_path(0.2);
+            scene.stroke(&stroke, Affine::IDENTITY, arc_color, None, &active);
+        }
+    })
+}
+
+/// **App-bar colapsable + cuerpo scrolleable** en un solo viewport (el sliver
+/// más pedido). Un único `offset` (en el Model) maneja las dos cosas: primero
+/// **colapsa** el header de `header_max` a `header_min` (consume los primeros
+/// `header_max - header_min` px de scroll), y luego **scrollea** el cuerpo bajo
+/// el header ya fijado en `header_min`.
+///
+/// `header(frac)` construye el contenido del header dado `frac ∈ [0,1]` (ver
+/// [`collapse_fraction`]) — el caller lo usa para fundir el título, mostrar una
+/// versión compacta al colapsar, etc. El header se pinta a la altura
+/// [`collapsed_height`] del momento.
+///
+/// `content_len` es el alto natural del cuerpo; el viewport del cuerpo cambia
+/// con el colapso (crece a medida que el header se achica). La rueda funciona
+/// tanto sobre el header como sobre el cuerpo (ambos emiten `on_scroll`). El
+/// caller clampea el offset con [`sliver_max_offset`].
+pub fn sliver_app_bar<Msg, H, F>(
+    offset: f32,
+    header_max: f32,
+    header_min: f32,
+    header: H,
+    content: View<Msg>,
+    content_len: f32,
+    viewport_len: f32,
+    on_scroll: F,
+    palette: &ScrollPalette,
+) -> View<Msg>
+where
+    Msg: Clone + 'static,
+    H: FnOnce(f32) -> View<Msg>,
+    F: Fn(f32) -> Msg + Send + Sync + 'static,
+{
+    let range = (header_max - header_min).max(0.0);
+    let h = collapsed_height(offset, header_max, header_min);
+    let frac = collapse_fraction(offset, header_max, header_min);
+    // El cuerpo recién empieza a scrollear cuando el colapso terminó.
+    let body_offset = (offset - range).max(0.0);
+    let body_vp = (viewport_len - h).max(0.0);
+
+    let on_scroll = Arc::new(on_scroll);
+    let line_px = palette.line_px;
+
+    // Header pinned (altura `h`), recortado, con rueda propia.
+    let s_head = on_scroll.clone();
+    let header_box = View::new(Style {
+        size: Size { width: percent(1.0), height: length(h) },
+        ..Default::default()
+    })
+    .clip(true)
+    .on_scroll(move |_dx, dy| Some((s_head)(dy * line_px)))
+    .children(vec![header(frac)]);
+
+    // Cuerpo: reusa scroll_y con el viewport restante y el offset del cuerpo.
+    let s_body = on_scroll;
+    let body = scroll_y(
+        body_offset,
+        content_len,
+        body_vp,
+        content,
+        move |d| (s_body)(d),
+        palette,
+    );
+
+    View::new(Style {
+        flex_direction:
+            llimphi_ui::llimphi_layout::taffy::prelude::FlexDirection::Column,
+        size: Size { width: percent(1.0), height: length(viewport_len) },
+        ..Default::default()
+    })
+    .clip(true)
+    .children(vec![header_box, body])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thumb_autohide_hold_fade_y_oculto() {
+        // Pleno durante el hold.
+        assert_eq!(thumb_autohide_alpha(0.0), 1.0);
+        assert_eq!(thumb_autohide_alpha(THUMB_HOLD_SECS), 1.0);
+        // A mitad del fade, alpha intermedio.
+        let mid = thumb_autohide_alpha(THUMB_HOLD_SECS + THUMB_FADE_SECS * 0.5);
+        assert!(mid > 0.0 && mid < 1.0, "alpha intermedio: {mid}");
+        // Pasado hold+fade, invisible y la app puede dejar de tickear.
+        assert_eq!(thumb_autohide_alpha(THUMB_HOLD_SECS + THUMB_FADE_SECS + 0.1), 0.0);
+        assert!(thumb_autohide_active(THUMB_HOLD_SECS + THUMB_FADE_SECS * 0.5));
+        assert!(!thumb_autohide_active(THUMB_HOLD_SECS + THUMB_FADE_SECS + 0.1));
+    }
+
+    #[test]
+    fn pull_progress_y_trigger() {
+        assert_eq!(pull_progress(0.0, 64.0), 0.0);
+        assert_eq!(pull_progress(32.0, 64.0), 0.5);
+        assert_eq!(pull_progress(128.0, 64.0), 1.0); // satura
+        assert_eq!(pull_progress(10.0, 0.0), 0.0); // umbral inválido
+        assert!(!pull_triggered(63.9, 64.0));
+        assert!(pull_triggered(64.0, 64.0));
+        assert!(pull_triggered(100.0, 64.0));
+    }
 
     #[test]
     fn max_y_clamp() {
@@ -307,6 +798,79 @@ mod tests {
         assert_eq!(approach(99.8, 100.0, 0.25), 100.0);
         // factor 1.0 salta de una.
         assert_eq!(approach(0.0, 100.0, 1.0), 100.0);
+    }
+
+    #[test]
+    fn fling_decae_y_se_detiene() {
+        // Con fricción <1, la velocidad decae cada paso y el delta tiene el
+        // signo de la velocidad.
+        let (v1, d1) = fling_step(1000.0, 0.016, FLING_FRICTION);
+        assert!(v1 < 1000.0 && v1 > 0.0);
+        assert!(d1 > 0.0 && d1 < 1000.0 * 0.016 + 0.01); // < rectángulo v·dt
+        // Tras muchos pasos de 16 ms, termina por debajo del umbral.
+        let mut v = 1200.0_f32;
+        let mut steps = 0;
+        while !fling_settled(v) && steps < 100_000 {
+            v = fling_step(v, 0.016, FLING_FRICTION).0;
+            steps += 1;
+        }
+        assert!(fling_settled(v));
+        // Velocidad negativa → delta negativo (scrollea al revés).
+        let (_, dneg) = fling_step(-500.0, 0.016, FLING_FRICTION);
+        assert!(dneg < 0.0);
+        // friction = 1.0 (sin fricción) → delta = v·dt exacto.
+        let (v2, d2) = fling_step(300.0, 0.02, 1.0);
+        assert!((v2 - 300.0).abs() < 1e-3);
+        assert!((d2 - 6.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn rubber_band_amortigua() {
+        let dim = 600.0;
+        // Siempre menor en magnitud que el overscroll crudo.
+        assert!(rubber_band(100.0, dim) < 100.0);
+        assert!(rubber_band(100.0, dim) > 0.0);
+        // Conserva el signo.
+        assert!(rubber_band(-80.0, dim) < 0.0);
+        // Rendimiento decreciente: estirar 2× no duplica el desplazamiento.
+        let a = rubber_band(100.0, dim);
+        let b = rubber_band(200.0, dim);
+        assert!(b > a && b < 2.0 * a);
+        // Cerca de 0 es casi lineal (poca amortiguación todavía).
+        assert!(rubber_band(0.0, dim).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sliver_colapso_y_max() {
+        // Header 200→64, viewport 500, contenido 1200.
+        let (max_h, min_h) = (200.0, 64.0);
+        // Offset 0 → expandido, frac 0.
+        assert_eq!(collapsed_height(0.0, max_h, min_h), 200.0);
+        assert_eq!(collapse_fraction(0.0, max_h, min_h), 0.0);
+        // A mitad del rango (68px de 136) → ~0.5 y altura ~132.
+        let mid = (max_h - min_h) / 2.0; // 68
+        assert!((collapse_fraction(mid, max_h, min_h) - 0.5).abs() < 1e-3);
+        assert!((collapsed_height(mid, max_h, min_h) - 132.0).abs() < 1e-3);
+        // Pasado el rango → fijado al mínimo, frac 1.
+        assert_eq!(collapsed_height(500.0, max_h, min_h), 64.0);
+        assert_eq!(collapse_fraction(500.0, max_h, min_h), 1.0);
+        // Max offset = rango (136) + scroll del cuerpo bajo el header mínimo.
+        let body_vp = 500.0 - min_h; // 436
+        let expected = 136.0 + max_offset(1200.0, body_vp);
+        assert!((sliver_max_offset(1200.0, 500.0, max_h, min_h) - expected).abs() < 1e-3);
+    }
+
+    #[test]
+    fn sticky_pegado_y_empujado() {
+        // Sección [100, 100+300], encabezado 40px de alto.
+        let (top, sh, hh) = (100.0, 300.0, 40.0);
+        // Antes de llegar al tope (offset 50 < 100): posición natural 50.
+        assert_eq!(sticky_y(50.0, top, sh, hh), 50.0);
+        // Dentro de la sección (offset 200 > top): pegado al tope (0).
+        assert_eq!(sticky_y(200.0, top, sh, hh), 0.0);
+        // Cerca del fondo de la sección: la próxima lo empuja hacia arriba (<0).
+        // section_bottom - hh = (100+300-380) - 40 = -20.
+        assert_eq!(sticky_y(380.0, top, sh, hh), -20.0);
     }
 
     #[test]

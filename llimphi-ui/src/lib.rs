@@ -12,6 +12,8 @@
 
 use std::sync::Arc;
 
+pub mod a11y;
+
 use llimphi_hal::winit::application::ApplicationHandler;
 use llimphi_hal::winit::dpi::{LogicalSize, PhysicalPosition};
 use llimphi_hal::winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -207,7 +209,7 @@ pub trait App: 'static {
 
     /// Identificador de aplicación. En Wayland se mapea al `app_id` del
     /// xdg-toplevel (lo que el compositor usa para reconocer la ventana,
-    /// p. ej. `carmen.greeter`). `None` deja que el sistema asigne uno.
+    /// p. ej. `mirada.greeter`). `None` deja que el sistema asigne uno.
     fn app_id() -> Option<&'static str> {
         None
     }
@@ -237,6 +239,19 @@ pub enum UserEvent<Msg> {
     },
     /// Pide cerrar la ventana secundaria con esa `key`. No afecta a la primaria.
     CloseWindow { key: u64 },
+    /// Evento del adapter AccessKit: el lector de pantalla solicitó el árbol
+    /// inicial, pidió ejecutar una acción (focus, click, etc.) o se desactivó.
+    /// El adapter usa el `EventLoopProxy` para enviarlos al hilo del runtime.
+    A11y(accesskit_winit::Event),
+}
+
+/// Permite que `accesskit_winit::Adapter::with_event_loop_proxy` mande sus
+/// eventos sobre nuestro `EventLoopProxy<UserEvent<Msg>>` sin que el caller
+/// los rutee a mano.
+impl<Msg> From<accesskit_winit::Event> for UserEvent<Msg> {
+    fn from(e: accesskit_winit::Event) -> Self {
+        UserEvent::A11y(e)
+    }
 }
 
 /// Asa al runtime de Llimphi. Clonable y enviable entre hilos: la usás para
@@ -256,6 +271,13 @@ enum HandleInner<Msg: Send + 'static> {
     /// llamar funciones que toman `&Handle<Msg>` sin levantar un event
     /// loop real (que en CI sin display tiraría).
     Test,
+    /// Handle **lifteado**: reenvía cada `Msg` (de un sub-app hospedado) al
+    /// handle del host aplicándole una función de elevación `Sub -> Host`. Lo
+    /// crea [`Handle::lift`]; permite que el `update` de un app embebido use
+    /// `dispatch`/`spawn`/`spawn_periodic` con su propio `Msg` y que el
+    /// resultado llegue al loop del host. No maneja ventanas (open/close/quit
+    /// son no-op): esas son del host, no del hospedado.
+    Lifted(Arc<dyn Fn(Msg) + Send + Sync>),
 }
 
 impl<Msg: Send + 'static> Clone for Handle<Msg> {
@@ -264,6 +286,7 @@ impl<Msg: Send + 'static> Clone for Handle<Msg> {
             inner: match &self.inner {
                 HandleInner::Real(p) => HandleInner::Real(p.clone()),
                 HandleInner::Test => HandleInner::Test,
+                HandleInner::Lifted(f) => HandleInner::Lifted(f.clone()),
             },
         }
     }
@@ -288,6 +311,26 @@ impl<Msg: Send + 'static> Handle<Msg> {
                 let _ = p.send_event(UserEvent::Quit);
             }
             HandleInner::Test => {}
+            // Un app hospedado no cierra el loop del host.
+            HandleInner::Lifted(_) => {}
+        }
+    }
+
+    /// Deriva un handle para un **sub-app hospedado**: el `update`/efectos del
+    /// sub-app usan su propio `Sub` msg, y `lift` los eleva al `Msg` del host
+    /// antes de despacharlos a este loop. Es la pieza que permite embeber un
+    /// App entero en otro (junto con [`crate::View::map`] para su `view`) sin
+    /// reescribirlo a patrón módulo. El sub-handle es `Clone + Send` como
+    /// cualquier handle. `open_window`/`close_window`/`quit` quedan no-op en él
+    /// (esas son del host).
+    pub fn lift<Sub, F>(&self, lift: F) -> Handle<Sub>
+    where
+        Sub: Send + 'static,
+        F: Fn(Sub) -> Msg + Send + Sync + 'static,
+    {
+        let parent = self.clone();
+        Handle {
+            inner: HandleInner::Lifted(Arc::new(move |sub: Sub| parent.dispatch(lift(sub)))),
         }
     }
 
@@ -324,6 +367,7 @@ impl<Msg: Send + 'static> Handle<Msg> {
                 let _ = p.send_event(UserEvent::Msg(msg));
             }
             HandleInner::Test => {}
+            HandleInner::Lifted(f) => f(msg),
         }
     }
 
@@ -347,6 +391,14 @@ impl<Msg: Send + 'static> Handle<Msg> {
                 // tests que dependan de su side) pero el msg se descarta.
                 std::thread::spawn(move || {
                     let _ = f();
+                });
+            }
+            HandleInner::Lifted(lift) => {
+                // Tarea one-shot del sub-app: corre en su hilo y el resultado
+                // se eleva al host vía la closure de lift.
+                let lift = lift.clone();
+                std::thread::spawn(move || {
+                    lift(f());
                 });
             }
         }
@@ -384,6 +436,17 @@ impl<Msg: Send + 'static> Handle<Msg> {
                 // arrancamos el loop. Los tests que necesiten verificar
                 // periodic behaviour deben usar el callback directo.
                 let _ = f;
+            }
+            HandleInner::Lifted(lift) => {
+                // Mismo loop que `Real` pero elevando al host. Si el loop del
+                // host se cerró, la closure de lift termina en un dispatch
+                // no-op (spinea hasta el exit, costo despreciable — igual que
+                // `Real`); aceptable para un ticker de animación/feed.
+                let lift = lift.clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(period);
+                    lift(f());
+                });
             }
         }
     }
@@ -508,6 +571,17 @@ struct RuntimeState<A: App> {
     /// Sólo entra en juego cuando el árbol principal tiene painters gpu y hay
     /// un overlay activo; resuelve el z-order (menús por encima del video).
     overlay_compositor: llimphi_hal::OverlayCompositor,
+    /// Backdrop blur post-pasada: para cada nodo con `.backdrop_blur(sigma)`,
+    /// el runtime aplica un Gauss separable (H+V) sobre la intermediate
+    /// restringido al rect del nodo, **después** de la rasterización vello y
+    /// **antes** de los `gpu_painter`. El compositor mantiene su scratch
+    /// interno; coste cero cuando no hay nodos blur.
+    blur_compositor: llimphi_hal::BlurCompositor,
+    /// Post-pasada de **matriz de color** (`filter: brightness/grayscale/…`),
+    /// restringida al rect del nodo, en el mismo punto que `blur_compositor`.
+    /// Mantiene su scratch interno; coste cero sin filtros de color. Fase
+    /// 7.1233.
+    color_filter_compositor: llimphi_hal::ColorFilterCompositor,
     model: Option<A::Model>,
     cursor: PhysicalPosition<f64>,
     modifiers: Modifiers,
@@ -541,6 +615,84 @@ struct RuntimeState<A: App> {
     /// Último título dinámico aplicado a la ventana (ver [`App::window_title`]).
     /// Evita llamar `set_title` en cada frame cuando no cambió.
     last_title: Option<String>,
+    /// Registro de animaciones implícitas (`View::animated`), vivo entre
+    /// frames. En cada redraw reconcilia el árbol y, si alguna sigue en curso,
+    /// el runtime pide otro frame (ticker autodetenido). Ver
+    /// [`llimphi_compositor::AnimRegistry`].
+    anim_registry: llimphi_compositor::AnimRegistry,
+    /// Registro de animaciones implícitas de **tamaño**
+    /// (`View::animated_size`, Flutter `AnimatedSize`), vivo entre frames.
+    /// A diferencia de [`Self::anim_registry`] que reconcilia props de
+    /// paint DESPUÉS del layout, este reconcilia `style.size`
+    /// **antes** del mount/compute, así siblings/hijos reflowean suave.
+    /// Ver [`llimphi_compositor::SizeAnimRegistry`].
+    size_anim_registry: llimphi_compositor::SizeAnimRegistry,
+    /// Registro de **heroes / shared-element transitions** (`View::hero`),
+    /// vivo entre frames. Detecta cambio de rect de una misma `key` entre
+    /// frames y escribe `transform` para "volar" del rect anterior al actual.
+    /// Ver [`llimphi_compositor::HeroRegistry`].
+    hero_registry: llimphi_compositor::HeroRegistry,
+    /// Adapter [AccessKit](https://accesskit.dev) — empuja un árbol de
+    /// accesibilidad al SO en cada paint para alimentar lectores de pantalla.
+    /// Sólo se inicializa si el SO tiene una tecnología asistiva activa; el
+    /// `update_if_active` evita construir el árbol cuando nadie escucha.
+    a11y_adapter: accesskit_winit::Adapter,
+    /// Identidad estable del árbol de accesibilidad entre `TreeUpdate`s. Se
+    /// genera una vez al crear el runtime y se reutiliza en cada update — los
+    /// lectores la usan para distinguir nuestra ventana de otras del SO.
+    a11y_tree_id: accesskit::TreeId,
+    /// Registro de **ripples/InkWell** (`View::ripple`), vivo entre frames. El
+    /// press dispara una salpicadura; cada redraw la pinta sobre el contenido y,
+    /// mientras alguna siga viva, pide otro frame (ticker autodetenido). Ver
+    /// [`llimphi_compositor::RippleRegistry`].
+    ripple_registry: llimphi_compositor::RippleRegistry,
+    /// Último tap (press izquierdo) sobre un nodo con `on_double_tap`: instante
+    /// + posición. El próximo press que caiga cerca y a tiempo dispara el
+    /// doble-tap. `None` cuando no hay un primer tap pendiente.
+    last_tap: Option<(std::time::Instant, PhysicalPosition<f64>)>,
+    /// Long-press armado (ver [`PendingLongPress`]). El runtime lo vence por
+    /// tiempo en `about_to_wait` y lo cancela en movimiento/release.
+    pending_long_press: Option<PendingLongPress<A::Msg>>,
+    /// **Retención de frame entero**. Tras un paint exitoso, guardamos las
+    /// dimensiones del viewport y los flags de animación del frame. Si en el
+    /// próximo `RedrawRequested` ningún sitio invalidó `last_render` (la
+    /// invariante existente del runtime), el modelo + view + layout son
+    /// idénticos al frame anterior: no hace falta rehacer mount/layout/paint,
+    /// alcanza con re-presentar `state.scene` tal cual quedó. Mata redraws
+    /// espurios (expose del compositor, refocus, ticker en el último frame de
+    /// una anim ya asentada). Si el frame retenido estaba animando o ripplando,
+    /// el ticker NECESITA avanzarlo → no hay retención (cache miss). Tampoco
+    /// hay retención con overlay o drag activos (camino conservador). Ver el
+    /// hit-check en `RedrawRequested`.
+    retained: Option<RetainedScene>,
+    /// Selección de texto activa fuera del editor (drag para resaltar, Ctrl/Cmd+C
+    /// para copiar). `None` = nada seleccionado. Ver [`TextSelection`].
+    selection: Option<TextSelection>,
+}
+
+/// Metadata del frame retenido — qué pintó la `state.scene` para validar que
+/// re-presentarla sin re-pintar es seguro.
+#[derive(Clone, Copy)]
+struct RetainedScene {
+    w: u32,
+    h: u32,
+    animating: bool,
+    rippling: bool,
+    has_overlay: bool,
+}
+
+/// Selección de texto activa fuera del editor (ver [`crate::View::selectable`]).
+/// Anclada a la `key` estable del nodo (no a su `NodeId`, que cambia cada
+/// frame); el runtime reconstruye el `parley::Layout` del nodo bajo esa key
+/// para extender la selección al arrastrar y para pintar el resaltado.
+#[derive(Clone, Copy)]
+struct TextSelection {
+    /// Key estable del nodo seleccionable (`text_select_key`).
+    key: u64,
+    /// Rango seleccionado, en coordenadas de bytes del `parley::Layout`.
+    sel: llimphi_text::parley::Selection,
+    /// `true` mientras el botón izquierdo sigue apretado (arrastrando).
+    dragging: bool,
 }
 
 struct RenderCache<Msg> {
@@ -565,12 +717,71 @@ struct OverlayCache<Msg> {
     hover_idx: Option<usize>,
 }
 
-/// Dos sabores de handler de drag activo: el simple `(phase, dx, dy)`
-/// o la variante que conserva la posición local del press original
-/// `(phase, dx, dy, lx0, ly0)`. El runtime elige uno al iniciar el drag.
+/// Tres sabores de handler de drag activo: el simple `(phase, dx, dy)`;
+/// la variante que conserva la posición local del press original
+/// `(phase, dx, dy, lx0, ly0)`; o el handler **con velocidad** que recibe
+/// también `(vx, vy)` al `DragPhase::End` (medida sobre los últimos
+/// [`VELOCITY_WINDOW`] de movimiento). El runtime elige uno al iniciar el
+/// drag — un nodo es uno u otro.
 enum DragHandlerKind<Msg> {
     Delta(DragFn<Msg>),
     DeltaAt(DragAtFn<Msg>, f32, f32),
+    Velocity(DragVelocityFn<Msg>),
+}
+
+/// Un handler de gesto "tipo click" (doble-tap / long-press) ya **resuelto**
+/// contra el nodo: o un `Msg` directo, o un handler posicional con la posición
+/// local `(lx, ly, w, h)` ya calculada. Se captura en el press para poder
+/// dispararlo más tarde (long-press, que vence por tiempo) sin volver a tocar
+/// el árbol.
+enum GestureResolved<Msg> {
+    Direct(Msg),
+    At(ClickAtFn<Msg>, f32, f32, f32, f32),
+}
+
+impl<Msg: Clone> GestureResolved<Msg> {
+    /// Materializa el `Msg` (clona el directo o invoca el handler posicional).
+    fn invoke(&self) -> Option<Msg> {
+        match self {
+            GestureResolved::Direct(m) => Some(m.clone()),
+            GestureResolved::At(h, lx, ly, w, ht) => h(*lx, *ly, *w, *ht),
+        }
+    }
+}
+
+/// Long-press **armado**: el press cayó sobre un nodo con `on_long_press`. El
+/// runtime lo dispara cuando pasa `deadline` (en `about_to_wait`), salvo que
+/// antes el cursor se aleje de `origin` (pasó a drag) o se suelte el botón —
+/// en ambos casos se cancela. Es la parte de "arena" del gesto: el árbitro es
+/// el tiempo + el movimiento.
+struct PendingLongPress<Msg> {
+    deadline: std::time::Instant,
+    origin: PhysicalPosition<f64>,
+    handler: GestureResolved<Msg>,
+}
+
+/// Umbral de duración para que un press se convierta en long-press.
+const LONG_PRESS_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+/// Si el cursor se aleja más que esto (px físicos) del origen del press, deja
+/// de ser long-press (pasó a drag/scroll) y se cancela.
+const LONG_PRESS_MOVE_CANCEL: f64 = 8.0;
+/// Ventana temporal máxima entre los dos taps de un doble-tap.
+const DOUBLE_TAP_WINDOW: std::time::Duration = std::time::Duration::from_millis(400);
+/// Distancia máxima (px físicos) entre los dos taps de un doble-tap.
+const DOUBLE_TAP_DIST: f64 = 16.0;
+
+/// ¿El press actual (`now`, `pos`) completa un doble-tap con el tap previo
+/// `last`? Verdadero si hubo un tap previo dentro de [`DOUBLE_TAP_WINDOW`] y a
+/// menos de [`DOUBLE_TAP_DIST`]. Función pura (testeable sin event loop).
+fn double_tap_qualifies(
+    last: Option<(std::time::Instant, PhysicalPosition<f64>)>,
+    now: std::time::Instant,
+    pos: PhysicalPosition<f64>,
+) -> bool {
+    last.is_some_and(|(t, p)| {
+        now.duration_since(t) <= DOUBLE_TAP_WINDOW
+            && ((p.x - pos.x).powi(2) + (p.y - pos.y).powi(2)).sqrt() <= DOUBLE_TAP_DIST
+    })
 }
 
 struct DragState<Msg> {
@@ -583,6 +794,48 @@ struct DragState<Msg> {
     /// origen no declaró ninguno (drag de resize/scroll/etc.). Los drop
     /// targets sólo reaccionan cuando hay payload.
     payload: Option<u64>,
+    /// Buffer móvil de (timestamp, dx, dy) por cada `CursorMoved` durante
+    /// el drag, recortado a [`VELOCITY_MAX_SAMPLES`]. Sólo se usa cuando el
+    /// handler es [`DragHandlerKind::Velocity`] — en los otros sabores
+    /// queda vacío. Al `DragPhase::End` el runtime computa la velocidad
+    /// sobre la ventana [`VELOCITY_WINDOW`].
+    samples: std::collections::VecDeque<(std::time::Instant, f64, f64)>,
+}
+
+/// Ventana temporal sobre la que se mide la velocidad de un drag al
+/// soltarlo. Movimientos más viejos no cuentan — sólo importa el último
+/// flick. ~100 ms es el valor que usa Android para fling.
+const VELOCITY_WINDOW: std::time::Duration = std::time::Duration::from_millis(100);
+/// Tope superior de muestras retenidas en el buffer móvil de velocidad —
+/// con eventos típicos de 60–120 Hz, ocho muestras cubren la ventana
+/// holgadamente. Más allá es ruido y costo.
+const VELOCITY_MAX_SAMPLES: usize = 8;
+
+/// Velocidad (px/s) calculada sobre los últimos [`VELOCITY_WINDOW`] de
+/// movimiento. Toma sólo las muestras dentro de la ventana, suma los
+/// deltas y divide por el tiempo transcurrido desde la primera muestra
+/// retenida hasta `now`. Función pura para testear sin event loop.
+fn compute_drag_velocity(
+    samples: &std::collections::VecDeque<(std::time::Instant, f64, f64)>,
+    now: std::time::Instant,
+) -> (f32, f32) {
+    if samples.is_empty() {
+        return (0.0, 0.0);
+    }
+    let cutoff = now.checked_sub(VELOCITY_WINDOW).unwrap_or(now);
+    let recent: Vec<&(std::time::Instant, f64, f64)> =
+        samples.iter().filter(|(t, _, _)| *t >= cutoff).collect();
+    if recent.is_empty() {
+        return (0.0, 0.0);
+    }
+    let t0 = recent[0].0;
+    let dt = now.duration_since(t0).as_secs_f32();
+    if dt < 0.001 {
+        return (0.0, 0.0);
+    }
+    let sum_dx: f64 = recent.iter().map(|(_, dx, _)| *dx).sum();
+    let sum_dy: f64 = recent.iter().map(|(_, _, dy)| *dy).sum();
+    ((sum_dx as f32) / dt, (sum_dy as f32) / dt)
 }
 
 /// Punto de entrada: corre el bucle Elm hasta que el usuario cierre la
@@ -601,4 +854,90 @@ pub fn run<A: App>() {
         secondaries: Vec::new(),
     };
     event_loop.run_app(&mut runtime).expect("run app");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn lift_aplica_la_funcion_de_elevacion() {
+        use std::sync::{Arc, Mutex};
+        // `lift` aplica la función Sub->Host síncronamente en `dispatch` (el
+        // dispatch al padre Test es no-op, pero la elevación corre): así
+        // observamos que el msg del sub-app se transforma para el host.
+        let seen = Arc::new(Mutex::new(Vec::<i32>::new()));
+        let parent: Handle<i32> = Handle::for_test();
+        let sub: Handle<String> = {
+            let seen = seen.clone();
+            parent.lift(move |s: String| {
+                let n = s.len() as i32;
+                seen.lock().unwrap().push(n);
+                n
+            })
+        };
+        sub.dispatch("hola".to_string());
+        let _ = sub.clone(); // es Clone como cualquier handle
+        assert_eq!(*seen.lock().unwrap(), vec![4]);
+    }
+
+    #[test]
+    fn velocidad_de_drag_promedia_dentro_de_la_ventana() {
+        use std::collections::VecDeque;
+        let now = Instant::now();
+        // Cuatro muestras dentro de la ventana (últimos 80 ms): 4 px en x cada
+        // 20 ms ⇒ 16 px en 80 ms ⇒ 200 px/s.
+        let mut samples: VecDeque<(Instant, f64, f64)> = VecDeque::new();
+        samples.push_back((now - Duration::from_millis(80), 4.0, 0.0));
+        samples.push_back((now - Duration::from_millis(60), 4.0, 0.0));
+        samples.push_back((now - Duration::from_millis(40), 4.0, 0.0));
+        samples.push_back((now - Duration::from_millis(20), 4.0, 0.0));
+        let (vx, vy) = compute_drag_velocity(&samples, now);
+        assert!((vx - 200.0).abs() < 1.0, "vx={vx}");
+        assert!(vy.abs() < 1e-3);
+        // Buffer vacío → (0,0).
+        let empty: VecDeque<(Instant, f64, f64)> = VecDeque::new();
+        assert_eq!(compute_drag_velocity(&empty, now), (0.0, 0.0));
+        // Muestras todas más viejas que VELOCITY_WINDOW → (0,0) (no hay
+        // movimiento reciente para fling).
+        let mut old: VecDeque<(Instant, f64, f64)> = VecDeque::new();
+        old.push_back((now - Duration::from_millis(500), 10.0, 10.0));
+        assert_eq!(compute_drag_velocity(&old, now), (0.0, 0.0));
+        // Eje y positivo (scroll vertical típico): 5 px cada 25 ms ⇒ 200 px/s.
+        let mut vy_samples: VecDeque<(Instant, f64, f64)> = VecDeque::new();
+        vy_samples.push_back((now - Duration::from_millis(75), 0.0, 5.0));
+        vy_samples.push_back((now - Duration::from_millis(50), 0.0, 5.0));
+        vy_samples.push_back((now - Duration::from_millis(25), 0.0, 5.0));
+        let (_, vy) = compute_drag_velocity(&vy_samples, now);
+        assert!((vy - 200.0).abs() < 1.0, "vy={vy}");
+    }
+
+    #[test]
+    fn double_tap_ventana_y_distancia() {
+        let t0 = Instant::now();
+        let p = PhysicalPosition::new(100.0, 100.0);
+        // Sin tap previo → nunca califica.
+        assert!(!double_tap_qualifies(None, t0, p));
+        // Segundo tap a tiempo (100 ms < 400) y cerca (3px < 16) → califica.
+        let near = PhysicalPosition::new(102.0, 102.0);
+        assert!(double_tap_qualifies(
+            Some((t0, p)),
+            t0 + Duration::from_millis(100),
+            near
+        ));
+        // A tiempo pero lejos (>16px) → no.
+        let far = PhysicalPosition::new(140.0, 100.0);
+        assert!(!double_tap_qualifies(
+            Some((t0, p)),
+            t0 + Duration::from_millis(100),
+            far
+        ));
+        // Cerca pero tarde (>400 ms) → no.
+        assert!(!double_tap_qualifies(
+            Some((t0, p)),
+            t0 + Duration::from_millis(600),
+            near
+        ));
+    }
 }

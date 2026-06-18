@@ -26,6 +26,16 @@ use crate::diagnostics::{Diagnostic, Severity};
 use crate::highlight::{Language, Span, SyntaxPalette, TokenKind};
 use crate::state::EditorState;
 
+/// Tope de líneas que la variante embebida (`text_editor_view_colored`)
+/// renderiza de una. La virtualización del editor-de-archivos capa a 200 para
+/// no generar miles de Views (wgpu rechaza el bind group); pero la variante
+/// embebida deja el scroll al contenedor de afuera y necesita pintar TODAS sus
+/// líneas (si no, la mitad de abajo queda sin pintar = negro al anclar el panel
+/// al fondo). Este tope es sólo la red de seguridad de wgpu — el caller acota el
+/// total real (el shell, por su `MAX_VISIBLE = 400`). Probado: ~400 líneas
+/// renderizan sin que wgpu rechace nada (el render plano viejo ya lo hacía).
+pub const EMBEDDED_LINE_CAP: usize = 512;
+
 /// Paleta del editor. Defaults dark.
 #[derive(Debug, Clone, Copy)]
 pub struct EditorPalette {
@@ -278,9 +288,57 @@ pub fn text_editor_view_full<Msg: Clone + 'static>(
         spans,
         &syntax,
         match_ranges,
+        None,
         on_pointer,
     );
 
+    View::new(Style {
+        flex_direction: FlexDirection::Row,
+        size: Size { width: percent(1.0_f32), height: length(height) },
+        ..Default::default()
+    })
+    .fill(palette.bg)
+    .clip(true)
+    .children(vec![gutter, content])
+}
+
+/// Como [`text_editor_view`] pero el caller provee el color de cada tramo de
+/// cada línea (`line_color_runs[n]` = `(byte_start, byte_end, Color)` de la
+/// línea `n`), en vez de derivarlo de un `Language`. Para outputs con coloreo
+/// semántico propio (un shell que tinta `ls`, paths, urls, números…) sobre el
+/// mismo editor read-only (numeración + selección + copiar).
+pub fn text_editor_view_colored<Msg: Clone + 'static>(
+    state: &EditorState,
+    palette: &EditorPalette,
+    metrics: EditorMetrics,
+    visible_lines: usize,
+    line_color_runs: &[Vec<(usize, usize, Color)>],
+    on_pointer: impl Fn(PointerEvent) -> Option<Msg> + Send + Sync + Clone + 'static,
+) -> View<Msg> {
+    let caret = state.cursor.caret;
+    let syntax = crate::syntax_palette_dark(&llimphi_theme::Theme::dark());
+    // Variante embebida: el contenedor de afuera (el panel de output del shell)
+    // hace el scroll y reserva alto para TODAS las líneas, así que las pintamos
+    // completas (cap alto = red de seguridad de wgpu, ver `EMBEDDED_LINE_CAP`).
+    let visible = visible_lines.max(1).min(EMBEDDED_LINE_CAP);
+    let line_count = state.line_count();
+    let scroll = state.scroll_offset.min(line_count.saturating_sub(1));
+    let end_line = (scroll + visible).min(line_count);
+    let height = (end_line - scroll) as f32 * metrics.line_height;
+    let gutter = build_gutter(state, scroll, end_line, caret.line, metrics, palette);
+    let content = build_content(
+        state,
+        palette,
+        metrics,
+        height,
+        scroll,
+        end_line,
+        Vec::new(),
+        &syntax,
+        &[],
+        Some(line_color_runs),
+        on_pointer,
+    );
     View::new(Style {
         flex_direction: FlexDirection::Row,
         size: Size { width: percent(1.0_f32), height: length(height) },
@@ -336,7 +394,8 @@ fn build_gutter<Msg: Clone + 'static>(
                         align_items: Some(AlignItems::Center),
                         ..Default::default()
                     })
-                    .text_aligned(label, metrics.font_size * 0.85, color, Alignment::End),
+                    .text_aligned(label, metrics.font_size * 0.85, color, Alignment::End)
+                    .mono(),
                 );
             }
             GutterStyle::Phantom => {
@@ -394,6 +453,7 @@ fn with_alpha(c: Color, alpha: f32) -> Color {
     Color::from_rgba8(rgba.r, rgba.g, rgba.b, a)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_content<Msg: Clone + 'static>(
     state: &EditorState,
     palette: &EditorPalette,
@@ -404,6 +464,11 @@ fn build_content<Msg: Clone + 'static>(
     spans_per_line: Vec<Vec<Span>>,
     syntax: &SyntaxPalette,
     match_ranges: &[(usize, usize)],
+    // Override de color por línea: `color_runs[n]` son `(byte_start, byte_end,
+    // Color)` para la línea `n` del buffer (índice absoluto). Cuando es `Some`,
+    // gana sobre el syntax highlight — para callers que colorean por semántica
+    // propia (un shell que tinta `ls`, paths, urls…). `None` = highlight normal.
+    color_runs: Option<&[Vec<(usize, usize, Color)>]>,
     on_pointer: impl Fn(PointerEvent) -> Option<Msg> + Send + Sync + Clone + 'static,
 ) -> View<Msg> {
     let caret = state.cursor.caret;
@@ -461,7 +526,9 @@ fn build_content<Msg: Clone + 'static>(
             children.push(phantom_guard_divider(local_line, metrics, palette));
             continue;
         }
-        if let Some(line_spans) = spans_per_line.get(n) {
+        if let Some(runs) = color_runs.and_then(|cr| cr.get(n)) {
+            children.push(line_text_color_runs(local_line, &text, runs, metrics, palette));
+        } else if let Some(line_spans) = spans_per_line.get(n) {
             children.push(line_text_tokens(local_line, &text, line_spans, metrics, palette, syntax));
         } else {
             children.push(line_text_plain(local_line, text, metrics, palette));
@@ -473,12 +540,30 @@ fn build_content<Msg: Clone + 'static>(
         children.extend(diagnostic_underline(d, scroll, end_line, metrics, palette));
     }
 
-    // 4) Caret — uno por cursor, sólo si visible.
+    // 4) Caret — uno por cursor, sólo si visible. El caret del cursor
+    //    primario se corre detrás del preedit del IME en composición (el
+    //    texto compuesto se pinta desde `p.col`), para que quede al final
+    //    de lo que el usuario está tecleando.
+    let preedit_cols = state.preedit.as_ref().map_or(0, |p| p.text.chars().count());
     for c in state.all_cursors() {
         let p = c.caret;
         if p.line >= scroll && p.line < end_line {
-            let local = crate::cursor::Pos::new(p.line - scroll, p.col);
+            let is_primary = std::ptr::eq(c, &state.cursor);
+            let col = if is_primary { p.col + preedit_cols } else { p.col };
+            let local = crate::cursor::Pos::new(p.line - scroll, col);
             children.push(caret_rect(local, metrics, palette));
+        }
+    }
+
+    // 5) Preedit del IME — texto en composición pintado en el caret con
+    //    subrayado, todavía fuera del buffer. Sólo en el cursor primario y
+    //    si su línea está en viewport. (En mono el ancho es exacto; el
+    //    texto que sigue al caret puede solaparse mientras se compone —
+    //    transitorio y, en el caso típico de acentos, de un solo char.)
+    if let Some(pre) = state.preedit.as_ref() {
+        let p = state.cursor.caret;
+        if p.line >= scroll && p.line < end_line {
+            children.extend(preedit_views(p.line - scroll, p.col, &pre.text, metrics, palette));
         }
     }
 
@@ -603,6 +688,7 @@ fn line_text_plain<Msg: Clone + 'static>(
         ..Default::default()
     })
     .text_aligned(text, metrics.font_size, palette.fg_text, Alignment::Start)
+    .mono()
 }
 
 /// Renderiza una línea como secuencia de Views absolutos posicionados,
@@ -660,6 +746,38 @@ fn line_text_tokens<Msg: Clone + 'static>(
         runs,
         Alignment::Start,
     )
+    .mono()
+}
+
+/// Como [`line_text_tokens`] pero con `(byte_start, byte_end, Color)`
+/// explícitos provistos por el caller (coloreo semántico propio, p. ej. un
+/// shell que tinta `ls`/paths/urls). El resto del texto va en `fg_text`.
+fn line_text_color_runs<Msg: Clone + 'static>(
+    line: usize,
+    text: &str,
+    runs: &[(usize, usize, Color)],
+    metrics: EditorMetrics,
+    palette: &EditorPalette,
+) -> View<Msg> {
+    View::new(Style {
+        position: Position::Absolute,
+        inset: Rect {
+            left: length(4.0_f32),
+            top: length(line as f32 * metrics.line_height),
+            right: auto(),
+            bottom: auto(),
+        },
+        size: Size { width: length(2000.0_f32), height: length(metrics.line_height) },
+        ..Default::default()
+    })
+    .text_runs(
+        text.to_string(),
+        metrics.font_size,
+        palette.fg_text,
+        runs.to_vec(),
+        Alignment::Start,
+    )
+    .mono()
 }
 
 fn caret_rect<Msg: Clone + 'static>(
@@ -681,6 +799,52 @@ fn caret_rect<Msg: Clone + 'static>(
         ..Default::default()
     })
     .fill(palette.caret)
+}
+
+/// Pinta el texto en composición del IME en `(local_line, col)`: el texto
+/// provisional + un subrayado debajo que lo marca como no-confirmado.
+/// Devuelve los dos Views (texto y subrayado). Posición en coords del
+/// área de contenido (mismo origen que [`line_text_plain`]).
+fn preedit_views<Msg: Clone + 'static>(
+    local_line: usize,
+    col: usize,
+    text: &str,
+    metrics: EditorMetrics,
+    palette: &EditorPalette,
+) -> Vec<View<Msg>> {
+    let x = 4.0 + col as f32 * metrics.char_width;
+    let y = local_line as f32 * metrics.line_height;
+    let w = (text.chars().count() as f32 * metrics.char_width).max(metrics.char_width);
+    vec![
+        // Texto provisional, en el color de texto normal.
+        View::new(Style {
+            position: Position::Absolute,
+            inset: Rect {
+                left: length(x),
+                top: length(y),
+                right: auto(),
+                bottom: auto(),
+            },
+            size: Size { width: length(w), height: length(metrics.line_height) },
+            align_items: Some(AlignItems::Center),
+            ..Default::default()
+        })
+        .text_aligned(text.to_string(), metrics.font_size, palette.fg_text, Alignment::Start)
+        .mono(),
+        // Subrayado: una línea fina en el color del caret bajo el texto.
+        View::new(Style {
+            position: Position::Absolute,
+            inset: Rect {
+                left: length(x),
+                top: length(y + metrics.line_height - 2.0),
+                right: auto(),
+                bottom: auto(),
+            },
+            size: Size { width: length(w), height: length(1.5_f32) },
+            ..Default::default()
+        })
+        .fill(palette.caret),
+    ]
 }
 
 fn bracket_highlight<Msg: Clone + 'static>(
