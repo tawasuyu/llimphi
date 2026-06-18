@@ -13,4 +13,4 @@ llimphi-ui = { workspace = true }
 llimphi-theme = { workspace = true }
 
 [dev-dependencies]
-llimphi-icons = { workspace = true }
+llimphi-icons = { path = "../../llimphi-icons" }

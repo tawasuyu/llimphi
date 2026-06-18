@@ -12,8 +12,8 @@ repository.workspace = true
 taffy = { workspace = true }
 
 [dev-dependencies]
-llimphi-hal = { path = "../llimphi-hal", version = "0.1.0" }
-llimphi-raster = { path = "../llimphi-raster", version = "0.1.0" }
+llimphi-hal = { path = "../llimphi-hal" }
+llimphi-raster = { path = "../llimphi-raster" }
 pollster = { workspace = true }
 
 [[example]]

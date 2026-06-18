@@ -25,7 +25,7 @@ llimphi-widget-modal = { workspace = true }
 [dev-dependencies]
 # Volcado headless del view a PNG (llvmpipe) para verlo sin levantar ventana,
 # usando el schema real de mirada como muestra.
-mirada-brain = { path = "../../../mirada/mirada-brain", version = "0.1.0" }
-pata-core = { path = "../../../pata/pata-core", version = "0.1.0" }
+mirada-brain = { path = "../../../mirada/mirada-brain" }
+pata-core = { path = "../../../pata/pata-core" }
 png = { workspace = true }
 pollster = { workspace = true }

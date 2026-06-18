@@ -17,9 +17,9 @@ glam = { workspace = true }
 [dev-dependencies]
 # Volcado headless del render 3D a PNG (llvmpipe en sandbox) para VER el cubo
 # sin levantar ventana — mismo patrón que gpu_primitivos_demo.
-llimphi-hal = { path = "../llimphi-hal", version = "0.1.0" }
-llimphi-raster = { path = "../llimphi-raster", version = "0.1.0" }
+llimphi-hal = { path = "../llimphi-hal" }
+llimphi-raster = { path = "../llimphi-raster" }
 png = { workspace = true }
 pollster = { workspace = true }
 # Demo interactivo: bucle Elm + ventana + mouse (orbita/zoom) sobre gpu_paint_with.
-llimphi-ui = { path = "../llimphi-ui", version = "0.1.0" }
+llimphi-ui = { path = "../llimphi-ui" }

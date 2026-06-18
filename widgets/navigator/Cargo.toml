@@ -15,4 +15,4 @@ llimphi-widget-tree = { workspace = true }
 llimphi-widget-nodegraph = { workspace = true }
 
 [dev-dependencies]
-llimphi-widget-segmented = { workspace = true }
+llimphi-widget-segmented = { path = "../segmented" }
