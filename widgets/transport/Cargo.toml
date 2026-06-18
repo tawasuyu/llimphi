@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 publish.workspace = true
+repository.workspace = true
 description = "llimphi-widget-transport — botones de transporte de reproductor (play/pause/prev/next/seek/volume/mute/repeat/shuffle/speed/snapshot/record/eq). Stateless: el caller pasa el estado por botón + un handler TransportAction → Msg."
 
 [dependencies]

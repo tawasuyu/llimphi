@@ -25,13 +25,13 @@ edition = "2021"
 rust-version = "1.80"
 license = "MIT"
 authors = ["Sergio <gerencia@jlsoltech.com>"]
-publish = false
+publish = true
 repository = "https://git.tawasuyu.net/tawasuyu/llimphi"
 
 [workspace.dependencies]
 # === Registro de apps / menú global ===
-app-bus = { path = "shared/app-bus" }
-foreign-vox = { path = "shared/foreign-vox" }
+app-bus = { path = "shared/app-bus", version = "0.1.0" }
+foreign-vox = { path = "shared/foreign-vox", version = "0.1.0" }
 # === Serialización ===
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -172,78 +172,78 @@ accesskit = "0.24"
 accesskit_winit = "0.33"
 vello_hybrid = "0.0.9"
 # Bucle Elm (input→update→view→layout→raster→present). Lo consumen las apps.
-llimphi-ui = { path = "llimphi-ui" }
+llimphi-ui = { path = "llimphi-ui", version = "0.1.0" }
 # Paleta semántica compartida por las apps y los widgets.
-llimphi-theme = { path = "llimphi-theme" }
+llimphi-theme = { path = "llimphi-theme", version = "0.1.0" }
 # Tweens y helpers de animación sobre el bucle Elm.
-llimphi-motion = { path = "llimphi-motion" }
+llimphi-motion = { path = "llimphi-motion", version = "0.1.0" }
 # Iconos vectoriales (BezPath en grid 24×24) compartidos por todas las apps.
-llimphi-icons = { path = "llimphi-icons" }
+llimphi-icons = { path = "llimphi-icons", version = "0.1.0" }
 # Widgets reusables sobre llimphi-ui — uno por crate.
-llimphi-widget-app-header = { path = "widgets/app-header" }
-llimphi-widget-banner = { path = "widgets/banner" }
-llimphi-widget-button = { path = "widgets/button" }
-llimphi-widget-card = { path = "widgets/card" }
-llimphi-clipboard = { path = "widgets/clipboard" }
-llimphi-widget-context-menu = { path = "widgets/context-menu" }
-llimphi-widget-edit-menu = { path = "widgets/edit-menu" }
-llimphi-widget-menubar = { path = "widgets/menubar" }
-llimphi-widget-list = { path = "widgets/list" }
-llimphi-widget-grid = { path = "widgets/grid" }
-llimphi-widget-slider = { path = "widgets/slider" }
-llimphi-widget-scroll = { path = "widgets/scroll" }
-llimphi-widget-splitter = { path = "widgets/splitter" }
-llimphi-widget-stat-card = { path = "widgets/stat-card" }
-llimphi-widget-tabs = { path = "widgets/tabs" }
-llimphi-module-command-palette = { path = "modules/command-palette" }
-llimphi-module-diff-viewer = { path = "modules/diff-viewer" }
-llimphi-module-fif = { path = "modules/fif" }
-llimphi-module-file-picker = { path = "modules/file-picker" }
-llimphi-module-bookmarks = { path = "modules/bookmarks" }
-llimphi-module-mini-map = { path = "modules/mini-map" }
-llimphi-module-shuma-term = { path = "modules/shuma-term" }
-llimphi-module-symbol-outline = { path = "modules/symbol-outline" }
-llimphi-plugin-host = { path = "modules/plugin-host" }
-llimphi-widget-theme-switcher = { path = "widgets/theme-switcher" }
-llimphi-widget-text-area = { path = "widgets/text-area" }
-llimphi-widget-text-editor-core = { path = "widgets/text-editor-core" }
-llimphi-widget-text-editor = { path = "widgets/text-editor" }
-llimphi-widget-text-editor-lsp = { path = "widgets/text-editor-lsp" }
-llimphi-widget-text-input = { path = "widgets/text-input" }
-llimphi-widget-tiled = { path = "widgets/tiled" }
-llimphi-widget-nodegraph = { path = "widgets/nodegraph" }
-llimphi-widget-tree = { path = "widgets/tree" }
-llimphi-widget-navigator = { path = "widgets/navigator" }
+llimphi-widget-app-header = { path = "widgets/app-header", version = "0.1.0" }
+llimphi-widget-banner = { path = "widgets/banner", version = "0.1.0" }
+llimphi-widget-button = { path = "widgets/button", version = "0.1.0" }
+llimphi-widget-card = { path = "widgets/card", version = "0.1.0" }
+llimphi-clipboard = { path = "widgets/clipboard", version = "0.1.0" }
+llimphi-widget-context-menu = { path = "widgets/context-menu", version = "0.1.0" }
+llimphi-widget-edit-menu = { path = "widgets/edit-menu", version = "0.1.0" }
+llimphi-widget-menubar = { path = "widgets/menubar", version = "0.1.0" }
+llimphi-widget-list = { path = "widgets/list", version = "0.1.0" }
+llimphi-widget-grid = { path = "widgets/grid", version = "0.1.0" }
+llimphi-widget-slider = { path = "widgets/slider", version = "0.1.0" }
+llimphi-widget-scroll = { path = "widgets/scroll", version = "0.1.0" }
+llimphi-widget-splitter = { path = "widgets/splitter", version = "0.1.0" }
+llimphi-widget-stat-card = { path = "widgets/stat-card", version = "0.1.0" }
+llimphi-widget-tabs = { path = "widgets/tabs", version = "0.1.0" }
+llimphi-module-command-palette = { path = "modules/command-palette", version = "0.1.0" }
+llimphi-module-diff-viewer = { path = "modules/diff-viewer", version = "0.1.0" }
+llimphi-module-fif = { path = "modules/fif", version = "0.1.0" }
+llimphi-module-file-picker = { path = "modules/file-picker", version = "0.1.0" }
+llimphi-module-bookmarks = { path = "modules/bookmarks", version = "0.1.0" }
+llimphi-module-mini-map = { path = "modules/mini-map", version = "0.1.0" }
+llimphi-module-shuma-term = { path = "modules/shuma-term", version = "0.1.0" }
+llimphi-module-symbol-outline = { path = "modules/symbol-outline", version = "0.1.0" }
+llimphi-plugin-host = { path = "modules/plugin-host", version = "0.1.0" }
+llimphi-widget-theme-switcher = { path = "widgets/theme-switcher", version = "0.1.0" }
+llimphi-widget-text-area = { path = "widgets/text-area", version = "0.1.0" }
+llimphi-widget-text-editor-core = { path = "widgets/text-editor-core", version = "0.1.0" }
+llimphi-widget-text-editor = { path = "widgets/text-editor", version = "0.1.0" }
+llimphi-widget-text-editor-lsp = { path = "widgets/text-editor-lsp", version = "0.1.0" }
+llimphi-widget-text-input = { path = "widgets/text-input", version = "0.1.0" }
+llimphi-widget-tiled = { path = "widgets/tiled", version = "0.1.0" }
+llimphi-widget-nodegraph = { path = "widgets/nodegraph", version = "0.1.0" }
+llimphi-widget-tree = { path = "widgets/tree", version = "0.1.0" }
+llimphi-widget-navigator = { path = "widgets/navigator", version = "0.1.0" }
 # Sello vectorial wawa (rombo + W implícita + Merkle Core).
-llimphi-widget-wawa-mark = { path = "widgets/wawa-mark" }
+llimphi-widget-wawa-mark = { path = "widgets/wawa-mark", version = "0.1.0" }
 # Widgets de elegancia transversal (tooltip, spinner, progress, toast,
 # modal, empty, status-bar, shortcuts-help, splash).
-llimphi-widget-tooltip = { path = "widgets/tooltip" }
-llimphi-widget-spinner = { path = "widgets/spinner" }
-llimphi-widget-progress = { path = "widgets/progress" }
-llimphi-widget-toast = { path = "widgets/toast" }
-llimphi-widget-modal = { path = "widgets/modal" }
-llimphi-widget-empty = { path = "widgets/empty" }
-llimphi-widget-status-bar = { path = "widgets/status-bar" }
-llimphi-widget-shortcuts-help = { path = "widgets/shortcuts-help" }
-llimphi-widget-timeline = { path = "widgets/timeline" }
-llimphi-widget-splash = { path = "widgets/splash" }
+llimphi-widget-tooltip = { path = "widgets/tooltip", version = "0.1.0" }
+llimphi-widget-spinner = { path = "widgets/spinner", version = "0.1.0" }
+llimphi-widget-progress = { path = "widgets/progress", version = "0.1.0" }
+llimphi-widget-toast = { path = "widgets/toast", version = "0.1.0" }
+llimphi-widget-modal = { path = "widgets/modal", version = "0.1.0" }
+llimphi-widget-empty = { path = "widgets/empty", version = "0.1.0" }
+llimphi-widget-status-bar = { path = "widgets/status-bar", version = "0.1.0" }
+llimphi-widget-shortcuts-help = { path = "widgets/shortcuts-help", version = "0.1.0" }
+llimphi-widget-timeline = { path = "widgets/timeline", version = "0.1.0" }
+llimphi-widget-splash = { path = "widgets/splash", version = "0.1.0" }
 # Controles de formulario y signaling (switch, segmented, breadcrumb,
 # badge, avatar, skeleton, field).
-llimphi-widget-switch = { path = "widgets/switch" }
-llimphi-widget-segmented = { path = "widgets/segmented" }
-llimphi-widget-dock-rail = { path = "widgets/dock-rail" }
-llimphi-widget-breadcrumb = { path = "widgets/breadcrumb" }
-llimphi-widget-badge = { path = "widgets/badge" }
-llimphi-widget-avatar = { path = "widgets/avatar" }
-llimphi-widget-skeleton = { path = "widgets/skeleton" }
-llimphi-widget-field = { path = "widgets/field" }
+llimphi-widget-switch = { path = "widgets/switch", version = "0.1.0" }
+llimphi-widget-segmented = { path = "widgets/segmented", version = "0.1.0" }
+llimphi-widget-dock-rail = { path = "widgets/dock-rail", version = "0.1.0" }
+llimphi-widget-breadcrumb = { path = "widgets/breadcrumb", version = "0.1.0" }
+llimphi-widget-badge = { path = "widgets/badge", version = "0.1.0" }
+llimphi-widget-avatar = { path = "widgets/avatar", version = "0.1.0" }
+llimphi-widget-skeleton = { path = "widgets/skeleton", version = "0.1.0" }
+llimphi-widget-field = { path = "widgets/field", version = "0.1.0" }
 # Firma visual transversal (gradient sutil + hairline accent).
-llimphi-widget-panel = { path = "widgets/panel" }
-llimphi-widget-panes = { path = "widgets/panes" }
-llimphi-workspace = { path = "llimphi-workspace" }
+llimphi-widget-panel = { path = "widgets/panel", version = "0.1.0" }
+llimphi-widget-panes = { path = "widgets/panes", version = "0.1.0" }
+llimphi-workspace = { path = "llimphi-workspace", version = "0.1.0" }
 # Abstracción Selector — host (paths) + wawa (khipus).
-llimphi-module-selector = { path = "modules/selector" }
+llimphi-module-selector = { path = "modules/selector", version = "0.1.0" }
 
 # === Filesystem helpers ===
 directories = "5"
@@ -302,61 +302,61 @@ ttf-parser = "0.25"
 # ============================================================
 # Intra-workspace deps de nahual (referenciadas por workspace = true)
 # ============================================================
-nahual-text-viewer-llimphi = { path = "02_ruway/nahual/nahual-text-viewer-llimphi" }
-nahual-image-viewer-llimphi = { path = "02_ruway/nahual/nahual-image-viewer-llimphi" }
-nahual-thumb-core = { path = "02_ruway/nahual/nahual-thumb-core" }
-nahual-gallery-llimphi = { path = "02_ruway/nahual/nahual-gallery-llimphi" }
-nahual-video-viewer-llimphi = { path = "02_ruway/nahual/nahual-video-viewer-llimphi" }
-nahual-card-viewer-llimphi = { path = "02_ruway/nahual/nahual-card-viewer-llimphi" }
-nahual-audio-viewer-llimphi = { path = "02_ruway/nahual/nahual-audio-viewer-llimphi" }
-nahual-tree-viewer-llimphi = { path = "02_ruway/nahual/nahual-tree-viewer-llimphi" }
-nahual-hex-viewer-llimphi = { path = "02_ruway/nahual/nahual-hex-viewer-llimphi" }
-nahual-table-viewer-llimphi = { path = "02_ruway/nahual/nahual-table-viewer-llimphi" }
-nahual-markdown-viewer-llimphi = { path = "02_ruway/nahual/nahual-markdown-viewer-llimphi" }
-nahual-archive-viewer-llimphi = { path = "02_ruway/nahual/nahual-archive-viewer-llimphi" }
-nahual-font-viewer-llimphi = { path = "02_ruway/nahual/nahual-font-viewer-llimphi" }
-nahual-map-viewer-llimphi = { path = "02_ruway/nahual/nahual-map-viewer-llimphi" }
-nahual-geo-core = { path = "02_ruway/nahual/nahual-geo-core" }
-nahual-viewer-core = { path = "02_ruway/nahual/nahual-viewer-core" }
-nahual-file-explorer-llimphi = { path = "02_ruway/nahual/nahual-file-explorer-llimphi" }
+nahual-text-viewer-llimphi = { path = "02_ruway/nahual/nahual-text-viewer-llimphi", version = "0.1.0" }
+nahual-image-viewer-llimphi = { path = "02_ruway/nahual/nahual-image-viewer-llimphi", version = "0.1.0" }
+nahual-thumb-core = { path = "02_ruway/nahual/nahual-thumb-core", version = "0.1.0" }
+nahual-gallery-llimphi = { path = "02_ruway/nahual/nahual-gallery-llimphi", version = "0.1.0" }
+nahual-video-viewer-llimphi = { path = "02_ruway/nahual/nahual-video-viewer-llimphi", version = "0.1.0" }
+nahual-card-viewer-llimphi = { path = "02_ruway/nahual/nahual-card-viewer-llimphi", version = "0.1.0" }
+nahual-audio-viewer-llimphi = { path = "02_ruway/nahual/nahual-audio-viewer-llimphi", version = "0.1.0" }
+nahual-tree-viewer-llimphi = { path = "02_ruway/nahual/nahual-tree-viewer-llimphi", version = "0.1.0" }
+nahual-hex-viewer-llimphi = { path = "02_ruway/nahual/nahual-hex-viewer-llimphi", version = "0.1.0" }
+nahual-table-viewer-llimphi = { path = "02_ruway/nahual/nahual-table-viewer-llimphi", version = "0.1.0" }
+nahual-markdown-viewer-llimphi = { path = "02_ruway/nahual/nahual-markdown-viewer-llimphi", version = "0.1.0" }
+nahual-archive-viewer-llimphi = { path = "02_ruway/nahual/nahual-archive-viewer-llimphi", version = "0.1.0" }
+nahual-font-viewer-llimphi = { path = "02_ruway/nahual/nahual-font-viewer-llimphi", version = "0.1.0" }
+nahual-map-viewer-llimphi = { path = "02_ruway/nahual/nahual-map-viewer-llimphi", version = "0.1.0" }
+nahual-geo-core = { path = "02_ruway/nahual/nahual-geo-core", version = "0.1.0" }
+nahual-viewer-core = { path = "02_ruway/nahual/nahual-viewer-core", version = "0.1.0" }
+nahual-file-explorer-llimphi = { path = "02_ruway/nahual/nahual-file-explorer-llimphi", version = "0.1.0" }
 
 # ============================================================
 # Intra-workspace deps de pineal (módulo de gráficos)
 # ============================================================
-pineal-core = { path = "00_unanchay/pineal/pineal-core" }
-pineal-render = { path = "00_unanchay/pineal/pineal-render" }
-pineal-cartesian = { path = "00_unanchay/pineal/pineal-cartesian" }
-pineal-stream = { path = "00_unanchay/pineal/pineal-stream" }
-pineal-mesh = { path = "00_unanchay/pineal/pineal-mesh" }
-pineal-financial = { path = "00_unanchay/pineal/pineal-financial" }
-pineal-polar = { path = "00_unanchay/pineal/pineal-polar" }
-pineal-heatmap = { path = "00_unanchay/pineal/pineal-heatmap" }
-pineal-treemap = { path = "00_unanchay/pineal/pineal-treemap" }
-pineal-flow = { path = "00_unanchay/pineal/pineal-flow" }
-pineal-phosphor = { path = "00_unanchay/pineal/pineal-phosphor" }
-pineal-export = { path = "00_unanchay/pineal/pineal-export" }
-pineal-hexbin = { path = "00_unanchay/pineal/pineal-hexbin" }
-pineal-contour = { path = "00_unanchay/pineal/pineal-contour" }
-pineal-bars = { path = "00_unanchay/pineal/pineal-bars" }
-pineal = { path = "00_unanchay/pineal/pineal-umbrella" }
+pineal-core = { path = "00_unanchay/pineal/pineal-core", version = "0.1.0" }
+pineal-render = { path = "00_unanchay/pineal/pineal-render", version = "0.1.0" }
+pineal-cartesian = { path = "00_unanchay/pineal/pineal-cartesian", version = "0.1.0" }
+pineal-stream = { path = "00_unanchay/pineal/pineal-stream", version = "0.1.0" }
+pineal-mesh = { path = "00_unanchay/pineal/pineal-mesh", version = "0.1.0" }
+pineal-financial = { path = "00_unanchay/pineal/pineal-financial", version = "0.1.0" }
+pineal-polar = { path = "00_unanchay/pineal/pineal-polar", version = "0.1.0" }
+pineal-heatmap = { path = "00_unanchay/pineal/pineal-heatmap", version = "0.1.0" }
+pineal-treemap = { path = "00_unanchay/pineal/pineal-treemap", version = "0.1.0" }
+pineal-flow = { path = "00_unanchay/pineal/pineal-flow", version = "0.1.0" }
+pineal-phosphor = { path = "00_unanchay/pineal/pineal-phosphor", version = "0.1.0" }
+pineal-export = { path = "00_unanchay/pineal/pineal-export", version = "0.1.0" }
+pineal-hexbin = { path = "00_unanchay/pineal/pineal-hexbin", version = "0.1.0" }
+pineal-contour = { path = "00_unanchay/pineal/pineal-contour", version = "0.1.0" }
+pineal-bars = { path = "00_unanchay/pineal/pineal-bars", version = "0.1.0" }
+pineal = { path = "00_unanchay/pineal/pineal-umbrella", version = "0.1.0" }
 
 # ============================================================
 # Intra-workspace deps de iniy (laboratorio semántico de creencias)
 # ============================================================
-iniy-core = { path = "01_yachay/iniy/iniy-core" }
-iniy-ingest = { path = "01_yachay/iniy/iniy-ingest" }
-iniy-extract = { path = "01_yachay/iniy/iniy-extract" }
-iniy-nli = { path = "01_yachay/iniy/iniy-nli" }
-iniy-nli-llm = { path = "01_yachay/iniy/iniy-nli-llm" }
-iniy-graph = { path = "01_yachay/iniy/iniy-graph" }
-iniy-store = { path = "01_yachay/iniy/iniy-store" }
+iniy-core = { path = "01_yachay/iniy/iniy-core", version = "0.1.0" }
+iniy-ingest = { path = "01_yachay/iniy/iniy-ingest", version = "0.1.0" }
+iniy-extract = { path = "01_yachay/iniy/iniy-extract", version = "0.1.0" }
+iniy-nli = { path = "01_yachay/iniy/iniy-nli", version = "0.1.0" }
+iniy-nli-llm = { path = "01_yachay/iniy/iniy-nli-llm", version = "0.1.0" }
+iniy-graph = { path = "01_yachay/iniy/iniy-graph", version = "0.1.0" }
+iniy-store = { path = "01_yachay/iniy/iniy-store", version = "0.1.0" }
 
 # === auto: declarados por crates internos faltantes ===
-cosmos-coords = { path = "01_yachay/cosmos/cosmos-coords" }
-cosmos-core = { path = "01_yachay/cosmos/cosmos-core" }
-cosmos-ephemeris = { path = "01_yachay/cosmos/cosmos-ephemeris" }
-cosmos-time = { path = "01_yachay/cosmos/cosmos-time" }
-cosmos-wcs = { path = "01_yachay/cosmos/cosmos-wcs" }
+cosmos-coords = { path = "01_yachay/cosmos/cosmos-coords", version = "0.1.0" }
+cosmos-core = { path = "01_yachay/cosmos/cosmos-core", version = "0.1.0" }
+cosmos-ephemeris = { path = "01_yachay/cosmos/cosmos-ephemeris", version = "0.1.0" }
+cosmos-time = { path = "01_yachay/cosmos/cosmos-time", version = "0.1.0" }
+cosmos-wcs = { path = "01_yachay/cosmos/cosmos-wcs", version = "0.1.0" }
 
 # === auto: externas de eternal ===
 celestial-eop-data = { version = "0.1"}

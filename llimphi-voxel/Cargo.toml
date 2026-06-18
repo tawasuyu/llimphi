@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 publish.workspace = true
+repository.workspace = true
 description = "llimphi-voxel — capa de dinámica voxel/juego (estilo Minecraft) sobre el motor 3D general llimphi-3d: world-gen procedural (terreno por ruido fractal) y la casa de bloques/biomas/streaming. Reusable por cualquier juego con orientación voxel. NO renderiza: delega en llimphi-3d (Scene3d + VoxelRenderer)."
 
 [dependencies]

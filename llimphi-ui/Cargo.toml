@@ -1,10 +1,12 @@
 [package]
 name = "llimphi-ui"
+description = "Native Rust UI framework: retained-mode View<Msg> Elm loop over vello + wgpu + taffy + parley."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 publish.workspace = true
+repository.workspace = true
 
 [dependencies]
 llimphi-hal = { path = "../llimphi-hal" }

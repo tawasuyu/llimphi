@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 publish.workspace = true
+repository.workspace = true
 description = "Demo Android Tier 1: pinta la pantalla con LEAD_GRAY usando llimphi-hal sobre Android NativeActivity."
 
 # Android NativeActivity carga la lib nativa como .so via dlopen; el

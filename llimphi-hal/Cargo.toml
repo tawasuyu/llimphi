@@ -1,10 +1,12 @@
 [package]
 name = "llimphi-hal"
+description = "Surface/device HAL for the llimphi UI framework (wgpu) — one scene tree across Wayland/X11/Win32/Android/bare-metal."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 publish.workspace = true
+repository.workspace = true
 
 [dependencies]
 wgpu = { workspace = true }

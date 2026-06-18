@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 publish.workspace = true
+repository.workspace = true
 description = "llimphi-module-mini-map — overlay minimap del buffer activo. Modulo Llimphi: el host le pasa un snapshot del buffer + viewport + caret, el modulo pinta un panel vertical con un slab por linea (ancho aprox chars), resalta el viewport visible y emite Jump(line) al click. Estilo VS Code/Sublime."
 
 [dependencies]

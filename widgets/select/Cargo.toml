@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 publish.workspace = true
+repository.workspace = true
 description = "llimphi-widget-select — control select/dropdown moderno para Llimphi: disparador cerrado + menú flotante (view_overlay) con búsqueda, ítems ricos (icono · sublabel · badge), selección múltiple y estados de carga asíncrona (Cargando / Error+reintento / vacío)."
 
 [dependencies]

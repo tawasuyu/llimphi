@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 publish.workspace = true
+repository.workspace = true
 description = "llimphi-widget-detail-table — grilla read-only con columnas de ancho flex/fijo y encabezados clicables que ordenan (▲/▼). La vista 'detalle' de un file manager: una fila por nodo, selección resaltada, click de fila y click de encabezado emiten Msg. Stateless; el caller pasa filas ya ordenadas/visibles."
 
 [dependencies]

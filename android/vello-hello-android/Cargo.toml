@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 publish.workspace = true
+repository.workspace = true
 description = "Tier 1.5 Android: vello + llimphi-raster pintando una chacana animada como smoke test del stack completo."
 
 [lib]

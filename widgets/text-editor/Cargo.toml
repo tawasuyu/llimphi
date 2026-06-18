@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 publish.workspace = true
+repository.workspace = true
 description = "llimphi-widget-text-editor — capa visual Llimphi del editor de código (gutter, caret, selección, scroll, integración de teclado al update Elm). El núcleo agnóstico (buffer/cursor/ops/undo/highlight/…) vive en llimphi-widget-text-editor-core y se re-exporta. LSP queda para una capa superior."
 
 [dependencies]

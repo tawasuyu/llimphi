@@ -1,10 +1,12 @@
 [package]
 name = "llimphi-raster"
+description = "2D GPU rasterizer for llimphi over vello, with an opt-in CPU+GPU hybrid renderer."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 publish.workspace = true
+repository.workspace = true
 
 [dependencies]
 llimphi-hal = { path = "../llimphi-hal" }
