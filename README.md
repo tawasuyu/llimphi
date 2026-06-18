@@ -19,9 +19,9 @@
 ## Not just 2D — a 3D voxel engine
 
 <p align="center">
-  <img src="docs/llimphi_voxel.gif" alt="A procedural voxel world (sand, cactus, carved rivers) orbiting — rendered by llimphi-3d" width="720">
+  <img src="docs/llimphi_voxel.gif" alt="Flying over an endless procedural voxel world — rendered by llimphi-3d" width="720">
   <br>
-  <sub>a procedural voxel world orbiting — rendered headless by <code>llimphi-3d</code>, frame-by-frame</sub>
+  <sub>flying over an endless voxel world — rendered headless by <code>llimphi-3d</code>, frame-by-frame</sub>
 </p>
 
 `llimphi-3d` is a **3D engine** on the same `wgpu`: it composes voxels (a GPU ray-march) and triangle meshes in one shared depth pass, with a keyframed cinema camera. It mounts into the ordinary 2D `View` tree through the GPU paint node (`set_viewport` + scissor), so a 3D viewport can live in a panel next to regular widgets — no second window, same Elm loop.
