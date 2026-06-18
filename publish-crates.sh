@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Publica llimphi a crates.io en orden de dependencias, esperando solo en rate-limit.
-# REQUIERE: cargo login <token>  (una vez).  Uso: ./publish-crates.sh
-# Reanudable: salta los ya publicados; en 429 espera 11 min y reintenta el mismo.
+# Publica llimphi a crates.io en orden de dependencias.
+# Reintenta en rate-limit (429, espera 11min) y en errores de red transitorios (30s).
+# Reanudable: salta los ya publicados.  Uso: cargo login <token> && ./publish-crates.sh
 set -u
 cd "$(dirname "$0")"
 while read -r c; do
@@ -11,11 +11,13 @@ while read -r c; do
     if out=$(cargo publish -p "$c" 2>&1); then echo "    ok"; break; fi
     if echo "$out" | grep -qiE "already (been )?uploaded|already exists|is already"; then
       echo "    (ya estaba, sigo)"; break
+    elif echo "$out" | grep -qiE "429|Too Many Requests|rate.?limit"; then
+      echo "    rate-limit; espero 11 min…"; sleep 660; continue
+    elif echo "$out" | grep -qiE "curl failed|HTTP2|http2|download of .* failed|failed to get|connection|timed out|temporary failure|spurious|error sending request|reset by peer|EOF while"; then
+      echo "    error de red transitorio; espero 30s y reintento…"; sleep 30; continue
+    else
+      echo "$out" | tail -8; echo "!!! error real en $c — corregir y re-correr"; exit 1
     fi
-    if echo "$out" | grep -qiE "429|Too Many Requests|rate.?limit"; then
-      echo "    rate-limit; espero 11 min y reintento $c…"; sleep 660; continue
-    fi
-    echo "$out" | tail -8; echo "!!! error real en $c — corregir y re-correr"; exit 1
   done
   sleep 3
 done < PUBLISH-ORDER.txt
