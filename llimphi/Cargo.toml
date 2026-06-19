@@ -1,0 +1,17 @@
+[package]
+name = "llimphi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+description = "Native Rust UI framework — 2D and 3D. Facade over the llimphi stack: a retained-mode, Elm-style View<Msg> loop on vello + wgpu + taffy + parley, plus a 3D voxel engine that mounts into the 2D layout tree. Re-exports llimphi-ui (core), llimphi-theme and llimphi-3d."
+repository = "https://github.com/tawasuyu/llimphi"
+homepage = "https://github.com/tawasuyu/llimphi"
+keywords = ["gui", "ui", "wgpu", "vello", "framework"]
+categories = ["gui", "rendering"]
+
+[dependencies]
+llimphi-ui = { path = "../llimphi-ui", version = "0.1.0" }
+llimphi-theme = { path = "../llimphi-theme", version = "0.1.0" }
+llimphi-3d = { path = "../llimphi-3d", version = "0.1.0" }

@@ -6,7 +6,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "llimphi-hal", "llimphi-raster", "llimphi-layout", "llimphi-text",
+    "llimphi", "llimphi-hal", "llimphi-raster", "llimphi-layout", "llimphi-text",
     "llimphi-ui", "llimphi-theme", "llimphi-surface", "llimphi-motion",
     "llimphi-icons", "llimphi-compositor", "llimphi-workspace",
     "widgets/*", "modules/*", "shared/app-bus",
