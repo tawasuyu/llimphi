@@ -1,0 +1,18 @@
+PARA: help@crates.io
+(enviar desde el email de tu cuenta de crates.io)
+
+SUBJECT:
+Rate limit increase for publishing the llimphi workspace (~88 crates)
+
+CUERPO:
+Hi! I'm publishing a multi-crate workspace (llimphi, an MIT-licensed native
+Rust UI framework) — about 88 interdependent crates that must go up together.
+I've hit the "too many new crates in a short period" limit. Could you
+temporarily raise my new-crate rate limit so I can publish the rest?
+
+crates.io user: sergiovelasquezzeballos
+Already published: app-bus, foreign-vox, llimphi-hal, llimphi-raster,
+  llimphi-layout, llimphi-text, llimphi-theme, llimphi-ui, llimphi-3d, ...
+Repo: https://github.com/tawasuyu/llimphi
+
+Thanks!

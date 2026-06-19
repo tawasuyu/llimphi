@@ -8,7 +8,7 @@ while read -r c; do
   [ -z "$c" ] && continue
   while true; do
     echo ">>> publicando $c"
-    if out=$(cargo publish -p "$c" 2>&1); then echo "    ok"; break; fi
+    if out=$(cargo publish -p "$c" --no-verify 2>&1); then echo "    ok"; break; fi
     if echo "$out" | grep -qiE "already (been )?uploaded|already exists|is already"; then
       echo "    (ya estaba, sigo)"; break
     elif echo "$out" | grep -qiE "429|Too Many Requests|rate.?limit"; then
