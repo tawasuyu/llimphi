@@ -31,22 +31,30 @@
 pub use glam;
 pub use wgpu;
 
+mod billboard;
 mod camera;
 mod cinema;
 mod dimensions;
 mod hud;
 mod mesh;
+mod postfx;
+mod reflection;
 mod renderer;
 mod scene;
+mod sky;
 mod voxel;
 mod voxel_renderer;
 
+pub use billboard::{Billboard, Billboards};
 pub use camera::Camera3d;
 pub use cinema::{CamKey, CameraTrack};
+pub use sky::{SkyBackdrop, SkyParams};
 pub use dimensions::{Dimension, Multiverse};
 pub use hud::{Hud, HudQuad};
 pub use mesh::{cube, push_cube, Vertex3d, CUBE_INDICES};
-pub use renderer::Renderer3d;
+pub use postfx::{PostFx, PostFxConfig};
+pub use reflection::{PlanarReflection, ReflectionPlane, SurfaceParams};
+pub use renderer::{Renderer3d, MESH_MAX_LIGHTS};
 pub use scene::Scene3d;
 pub use voxel::{DirtyBox, VoxelGrid};
 pub use voxel_renderer::{

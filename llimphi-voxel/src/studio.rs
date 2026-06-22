@@ -20,6 +20,12 @@ use llimphi_3d::Camera3d;
 /// (cúbica en XZ, alto = 0.4·lado, mínimo 48) — el mismo criterio que la app.
 pub const PREVIEW_DIM_XZ: u32 = 128;
 
+/// **Dirección del sol** de la escena (hacia el sol, sin normalizar). Una sola
+/// fuente de verdad: la usa el preview/export para iluminar (`voxel.sun_dir`) y el
+/// plano [`ShotKind::Backlight`] para saber adónde mirar. Sol algo bajo → luz
+/// rasante (claroscuro) y, en contraluz, **god rays** legibles.
+pub const SCENE_SUN: [f32; 3] = [0.5, 0.36, 0.45];
+
 /// Calcula el `dim` `[x, y, z]` de un mundo de lado `xz` (alto derivado).
 pub fn world_dim(xz: u32) -> [u32; 3] {
     let dy = (xz * 4 / 10).max(48);
@@ -99,12 +105,19 @@ impl ActorKeySpec {
 pub struct ActorSpec {
     pub character: usize,
     pub keys: Vec<ActorKeySpec>,
+    /// **Tasa de cuadros propia** del actor (`None` = fluido/nativo). Con un valor
+    /// bajo (12–15) el actor se anima *en doses* (stop-motion): es el sello que
+    /// separa al Héroe del Avatar. Ver [`ActorScript::quantize`].
+    #[serde(default)]
+    pub frame_rate: Option<u32>,
 }
 
 impl ActorSpec {
-    /// Compila los keyframes a un [`ActorScript`] reproducible.
+    /// Compila los keyframes a un [`ActorScript`] reproducible (con su tasa de
+    /// cuadros propia, si la tiene).
     pub fn to_script(&self) -> ActorScript {
         ActorScript::new(self.keys.iter().map(|k| k.to_key()).collect())
+            .with_frame_rate(self.frame_rate)
     }
 }
 
@@ -122,12 +135,21 @@ pub enum ShotKind {
     Side,
     /// Órbita: gira lento alrededor del reparto.
     Orbit,
+    /// **Contraluz**: cámara del lado opuesto al sol, mirando hacia él con el reparto
+    /// a contraluz (silueta en el tercio bajo) y el disco solar en lo alto del cuadro
+    /// → rim light + **god rays** (haces volumétricos). El plano "héroe" del motor.
+    Backlight,
 }
 
 impl ShotKind {
     /// Todos los planos (para ciclar en un editor).
-    pub const ALL: [ShotKind; 4] =
-        [ShotKind::Establishing, ShotKind::CloseUp, ShotKind::Side, ShotKind::Orbit];
+    pub const ALL: [ShotKind; 5] = [
+        ShotKind::Establishing,
+        ShotKind::CloseUp,
+        ShotKind::Side,
+        ShotKind::Orbit,
+        ShotKind::Backlight,
+    ];
 
     /// Nombre legible (español).
     pub fn label(self) -> &'static str {
@@ -136,6 +158,7 @@ impl ShotKind {
             ShotKind::CloseUp => "primer plano",
             ShotKind::Side => "lateral",
             ShotKind::Orbit => "órbita",
+            ShotKind::Backlight => "contraluz",
         }
     }
 
@@ -149,18 +172,30 @@ impl ShotKind {
     /// elevado a la altura del pecho), con el ojo según el tipo, a distancia base
     /// `d` (escala con el tamaño del reparto). `t` (seg) anima la órbita.
     pub fn resolve(self, look: Vec3, d: f32, t: f32) -> Camera3d {
-        let (eye, fov) = match self {
+        // `(eye, fov, target)` por tipo. Casi todos miran al reparto (`look`); el
+        // contraluz sube el objetivo hacia el sol para meterlo en el cuadro.
+        let (eye, fov, target) = match self {
             ShotKind::Establishing => {
-                (look + Vec3::new(-0.5 * d, 0.9 * d, -1.6 * d), 50.0)
+                (look + Vec3::new(-0.5 * d, 0.9 * d, -1.6 * d), 50.0, look)
             }
-            ShotKind::CloseUp => (look + Vec3::new(0.25 * d, 0.45 * d, -0.85 * d), 40.0),
-            ShotKind::Side => (look + Vec3::new(1.35 * d, 0.4 * d, 0.15 * d), 46.0),
+            ShotKind::CloseUp => (look + Vec3::new(0.25 * d, 0.45 * d, -0.85 * d), 40.0, look),
+            ShotKind::Side => (look + Vec3::new(1.35 * d, 0.4 * d, 0.15 * d), 46.0, look),
             ShotKind::Orbit => {
                 let a = t * 0.6;
-                (look + Vec3::new(a.cos() * 1.3 * d, 0.6 * d, a.sin() * 1.3 * d), 48.0)
+                (look + Vec3::new(a.cos() * 1.3 * d, 0.6 * d, a.sin() * 1.3 * d), 48.0, look)
+            }
+            ShotKind::Backlight => {
+                // Detrás del reparto respecto al sol (horizontal anti-sol), apenas
+                // elevado; el objetivo sube hacia el cielo → la cámara mira hacia el
+                // sol con el reparto a contraluz en el tercio bajo.
+                let s = Vec3::new(SCENE_SUN[0], SCENE_SUN[1], SCENE_SUN[2]).normalize();
+                let back = Vec3::new(-s.x, 0.0, -s.z).normalize();
+                let eye = look + back * (1.2 * d) + Vec3::new(0.0, 0.15 * d, 0.0);
+                let target = look + Vec3::new(0.0, 0.55 * d, 0.0);
+                (eye, 55.0, target)
             }
         };
-        Camera3d { eye, target: look, fovy_rad: fov_f32_to_rad(fov), ..Camera3d::default() }
+        Camera3d { eye, target, fovy_rad: fov_f32_to_rad(fov), ..Camera3d::default() }
     }
 }
 
@@ -191,6 +226,39 @@ pub struct SceneSpec {
     pub actors: Vec<ActorSpec>,
     #[serde(default)]
     pub shots: Vec<ShotSpec>,
+    /// **Cámara en mano**: intensidad del temblor orgánico (`0` = trípode fijo,
+    /// look de dron; `~1` = respiración/pulso de camarógrafo). Ensucia la cámara
+    /// matemáticamente perfecta del motor — es el sello que mete al espectador en
+    /// el "barro" de la escena. Ver [`handheld_shake`].
+    #[serde(default)]
+    pub handheld: f32,
+}
+
+/// **Temblor de cámara en mano**, determinista (función pura de `t` → la peli sale
+/// reproducible cuadro a cuadro). Suma de senos en frecuencias inconmensurables:
+/// una **respiración** lenta (bob vertical) + un **micro-pulso** rápido en los tres
+/// ejes para el ojo, y una **deriva** aún más lenta para el objetivo (el encuadre
+/// flota, no sólo tiembla). `amt ≤ 0` → sin offset (trípode). Devuelve
+/// `(offset_ojo, offset_objetivo)` en unidades de mundo, escalado un poco con la
+/// distancia `d` del plano para que también respire en planos lejanos.
+pub fn handheld_shake(t: f32, amt: f32, d: f32) -> (Vec3, Vec3) {
+    if amt <= 0.0 {
+        return (Vec3::ZERO, Vec3::ZERO);
+    }
+    let scale = amt * (1.0 + d * 0.03);
+    // Respiración (bob) + micro-pulso por eje (fases y frecuencias dispares).
+    let breath = (t * 1.7).sin() * 0.6 + (t * 0.9).sin() * 0.4;
+    let jx = (t * 9.3).sin() * 0.5 + (t * 4.7 + 1.3).sin() * 0.5;
+    let jy = (t * 8.1 + 2.1).sin() * 0.5 + (t * 5.3 + 0.7).sin() * 0.5;
+    let jz = (t * 7.4 + 0.4).sin() * 0.5 + (t * 3.9 + 2.7).sin() * 0.5;
+    let eye = Vec3::new(jx * 0.10, breath * 0.12 + jy * 0.08, jz * 0.10) * scale;
+    // Deriva del objetivo: más lenta y desfasada → el cuadro "busca" al sujeto.
+    let tgt = Vec3::new(
+        (t * 1.3 + 0.5).sin() * 0.06,
+        (t * 1.1 + 1.9).sin() * 0.05,
+        0.0,
+    ) * scale;
+    (eye, tgt)
 }
 
 impl SceneSpec {
@@ -221,6 +289,19 @@ impl SceneSpec {
         ts.sort_by(f32::total_cmp);
         ts.dedup_by(|a, b| (*a - *b).abs() < EPS);
         ts
+    }
+
+    /// La **cámara de la escena** en `t`: resuelve el plano vigente mirando a
+    /// `look` (centroide del reparto) a distancia `d`, y le suma el temblor de
+    /// **cámara en mano** ([`handheld_shake`]) según [`Self::handheld`]. Es el
+    /// único punto por el que deberían pasar el preview y el export para que el
+    /// sello de cámara salga igual en ambos.
+    pub fn camera_at(&self, look: Vec3, d: f32, t: f32) -> Camera3d {
+        let mut cam = self.active_shot(t).resolve(look, d, t);
+        let (eo, to) = handheld_shake(t, self.handheld, d);
+        cam.eye += eo;
+        cam.target += to;
+        cam
     }
 
     /// El plano vigente en `t` (el último con `start ≤ t`); `Establishing` si no
@@ -265,14 +346,21 @@ impl SceneSpec {
                     ActorKeySpec { t: t_turn, gx: gx1, gz, clip: Some(gesture), face: Some(PI) },
                     ActorKeySpec { t: dur, gx: gx1, gz, clip: Some(gesture), face: Some(PI) },
                 ],
+                // El **Héroe** (primer actor) se anima en doses (12 fps): se mueve a
+                // tirones, pesado, contra los demás (Avatares) que van fluidos. Es el
+                // sello de animación, visible ya en la escena de arranque.
+                frame_rate: if i == 0 { Some(12) } else { None },
             });
         }
-        // Dos planos: establecedor durante la caminata, primer plano en el gesto.
+        // Tres planos: establecedor, **contraluz** a mitad de la caminata (el reparto
+        // entra al sol → luce los god rays), y primer plano en el gesto.
         let shots = vec![
             ShotSpec { start: 0.0, kind: ShotKind::Establishing },
+            ShotSpec { start: t_walk * 0.5, kind: ShotKind::Backlight },
             ShotSpec { start: t_turn, kind: ShotKind::CloseUp },
         ];
-        Self { name: name.into(), world, duration: dur, actors, shots }
+        // Cámara en mano suave por defecto: el sello se ve sin tener que pedirlo.
+        Self { name: name.into(), world, duration: dur, actors, shots, handheld: 0.7 }
     }
 }
 
@@ -396,6 +484,36 @@ mod tests {
         assert!(!beats.is_empty(), "hay al menos un acento");
         assert!(beats.iter().all(|&t| t >= 0.0 && t <= s.duration + 0.1));
         assert!(beats.iter().any(|&t| (t - 3.0).abs() < 0.2), "acento cerca del gesto/corte");
+    }
+
+    #[test]
+    fn camara_en_mano_es_determinista_y_apagable() {
+        // amt=0 → trípode: sin offset, exactamente cero.
+        let (e0, t0) = handheld_shake(1.234, 0.0, 30.0);
+        assert_eq!(e0, Vec3::ZERO);
+        assert_eq!(t0, Vec3::ZERO);
+
+        // amt>0 → tiembla (offset no nulo) y es función pura de t (reproducible).
+        let (e1, _) = handheld_shake(1.234, 0.7, 30.0);
+        let (e2, _) = handheld_shake(1.234, 0.7, 30.0);
+        assert_eq!(e1, e2, "mismo t → mismo temblor (peli reproducible)");
+        assert!(e1.length() > 0.0, "con intensidad la cámara se mueve");
+        // Instantes distintos → temblor distinto (no está congelado).
+        let (e3, _) = handheld_shake(1.235, 0.7, 30.0);
+        assert!((e1 - e3).length() > 0.0, "el temblor evoluciona en el tiempo");
+    }
+
+    #[test]
+    fn frame_rate_del_heroe_viaja_al_guion() {
+        let dim = world_dim(128);
+        let s = SceneSpec::walk_and_emote("demo", 0, 3, Clip::Wave, dim);
+        // El primer actor (Héroe) anima en doses; los demás, fluidos.
+        assert_eq!(s.actors[0].frame_rate, Some(12));
+        assert_eq!(s.actors[1].frame_rate, None);
+        // Y sobrevive la compilación a guion.
+        assert_eq!(s.scripts()[0].frame_rate(), Some(12));
+        // Cámara en mano por defecto encendida.
+        assert!(s.handheld > 0.0);
     }
 
     #[test]
